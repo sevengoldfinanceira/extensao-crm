@@ -1,0 +1,44 @@
+-- Seven Gold CRM — Fix backend: rota /api/leads/from-whatsapp-extension
+--
+-- PROBLEMA: A rota recebe assigned_to_email/assigned_to_name da extensão
+-- mas NÃO repassa para o INSERT no Supabase, violando o constraint:
+--   "leads_assigned_to_required"
+--
+-- O fix precisa ser feito NO CÓDIGO DO BACKEND (painel.sevengoldfinanceira.com.br).
+-- Abaixo está o que a rota precisa fazer:
+--
+-- ANTES (provavelmente así):
+--   const { name, phone, stage, tags, notes, source, ... } = req.body;
+--   await supabase.from('leads').insert({ name, phone, stage, tags, notes, source });
+--
+-- DEPOIS (correto):
+--   const {
+--     name, phone, stage, tags, notes, source,
+--     assigned_to_email, assigned_to_name,
+--     created_by_email, created_by_name,
+--     updated_by_email, updated_by_name,
+--     property_region, credit_value, down_payment_value, installment_value,
+--     created_at, updated_at,
+--   } = req.body;
+--
+--   await supabase.from('leads').insert({
+--     name, phone, stage, tags, notes, source,
+--     assigned_to_email, assigned_to_name,
+--     created_by_email, created_by_name,
+--     updated_by_email, updated_by_name,
+--     property_region, credit_value, down_payment_value, installment_value,
+--     created_at, updated_at,
+--   });
+--
+-- Verificar se a tabela 'leads' no Supabase tem essas colunas:
+--   assigned_to_email, assigned_to_name,
+--   created_by_email, created_by_name,
+--   updated_by_email, updated_by_name
+--
+-- Se não tiver, criar a migration:
+-- ALTER TABLE public.leads ADD COLUMN IF NOT EXISTS assigned_to_email text;
+-- ALTER TABLE public.leads ADD COLUMN IF NOT EXISTS assigned_to_name text;
+-- ALTER TABLE public.leads ADD COLUMN IF NOT EXISTS created_by_email text;
+-- ALTER TABLE public.leads ADD COLUMN IF NOT EXISTS created_by_name text;
+-- ALTER TABLE public.leads ADD COLUMN IF NOT EXISTS updated_by_email text;
+-- ALTER TABLE public.leads ADD COLUMN IF NOT EXISTS updated_by_name text;

@@ -1,0 +1,40 @@
+Seven Gold CRM - Extensão WhatsApp
+
+Como instalar no Edge:
+
+1. Abra o Edge.
+2. Digite na barra de endereço:
+   edge://extensions
+3. Ative o Modo do desenvolvedor.
+4. Clique em "Carregar sem compactação".
+5. Selecione a pasta da extensão Seven Gold CRM.
+6. Abra o WhatsApp Web:
+   https://web.whatsapp.com
+
+Como usar:
+
+1. Abra uma conversa no WhatsApp Web.
+2. Clique em "Capturar lead".
+3. Confira se Nome e Telefone foram preenchidos corretamente.
+4. Escolha a etapa do funil, se necessário.
+5. Adicione etiquetas ou observações, se necessário.
+6. Clique em "Salvar lead no funil".
+7. Aguarde a mensagem:
+   "Lead salvo no funil com sucesso. Campos limpos, pronto para o próximo lead."
+
+Observações importantes:
+
+* A extensão não salva mensagens da conversa.
+* A extensão não salva fotos, áudios ou arquivos.
+* Ela apenas envia Nome, Telefone, Etapa, Etiquetas e Observações para o CRM.
+* Se o número já estiver cadastrado, aparecerá aviso de duplicado.
+* Se aparecer duplicado, não tente cadastrar de novo. Edite o lead diretamente no CRM.
+* Sempre confira Nome e Telefone antes de salvar.
+
+CRM:
+
+Para abrir o CRM, clique no botão "Abrir CRM" dentro da extensão ou acesse:
+https://painel.sevengoldfinanceira.com.br/crm.html
+
+Versão:
+Seven Gold CRM • Extensão v1.0

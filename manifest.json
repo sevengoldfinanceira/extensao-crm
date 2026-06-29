@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Seven Gold CRM",
+  "version": "1.0.0",
+  "description": "CRM integrado ao WhatsApp Web",
+  "permissions": ["alarms", "identity", "notifications", "storage", "tabs", "scripting"],
+  "host_permissions": [
+    "https://web.whatsapp.com/*",
+    "https://painel.sevengoldfinanceira.com.br/*",
+    "https://nunqqlstuwgqommasiuc.supabase.co/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://web.whatsapp.com/*"],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Seven Gold CRM"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/logo-panel.png"],
+      "matches": ["https://web.whatsapp.com/*"]
+    }
+  ]
+}
