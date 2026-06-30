@@ -43,6 +43,22 @@ function safeStringify(value) {
 
 const DEBUG = false;
 
+async function fetchCrmApi(url, options = {}) {
+  const { session } = await getStoredAuthSession();
+  const accessToken = session?.access_token;
+  if (!accessToken) {
+    throw new Error('Sessão do CRM ausente ou expirada. Entre novamente com o Google.');
+  }
+
+  return fetch(url, {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   console.log('[Seven Gold CRM] Extension installed.');
 });
@@ -100,7 +116,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'GET_LEAD_BY_PHONE') {
     const url = `${CRM_API_BASE_URL}/api/leads/by-phone?phone=${encodeURIComponent(message.phone)}`;
     
-    fetch(url)
+    fetchCrmApi(url)
       .then(async (r) => {
         if (r.status === 404) {
           return sendResponse({ ok: true, found: false, lead: null });
@@ -116,6 +132,41 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       });
 
     return true; // keep channel open for async response
+  }
+
+  if (message.type === 'GET_LEAD_ASSIGNEES') {
+    const url = `${CRM_API_BASE_URL}/api/leads/assignees`;
+
+    fetchCrmApi(url)
+      .then(async (r) => {
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+        sendResponse(body);
+      })
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+
+    return true;
+  }
+
+  if (message.type === 'ASSIGN_LEAD_RESPONSIBLE') {
+    const url = `${CRM_API_BASE_URL}/api/leads/assignees`;
+
+    fetchCrmApi(url, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lead_id: message.lead_id,
+        assigned_to_email: message.assigned_to_email,
+      }),
+    })
+      .then(async (r) => {
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+        sendResponse(body);
+      })
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+
+    return true;
   }
 
   if (message.type === 'GET_APPOINTMENTS') {
@@ -172,7 +223,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     console.log('[Seven Gold CRM][BG] Enviando PATCH', isFullUpdate ? idUrl : stageUrl, '| Body length:', bodyStr.length);
     console.log('[Seven Gold CRM][BG] Body:', bodyStr);
 
-    fetch(isFullUpdate ? idUrl : stageUrl, {
+    fetchCrmApi(isFullUpdate ? idUrl : stageUrl, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(isFullUpdate ? fullPayload : stagePayload)
@@ -183,7 +234,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         if (r.status === 404 && isFullUpdate) {
           console.log('[Seven Gold CRM][BG] /api/leads/:id retornou 404. Tentando /api/leads/update-stage...');
-          return fetch(stageUrl, {
+          return fetchCrmApi(stageUrl, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(stagePayload)

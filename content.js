@@ -220,6 +220,20 @@
     );
   }
 
+  function canViewLeadAssignee(role) {
+    if (isAdminRole(role)) return true;
+    const norm = normalizeRole(role).replace(/[\s_]+/g, '-');
+    return [
+      'coordenador-comercial',
+      'supervisor-comercial',
+      'coordenador-posvenda',
+      'coordenador-adm',
+      'coordenador-financeiro',
+      'coordenador-mkt',
+      'coordenador-rh',
+    ].includes(norm);
+  }
+
   async function loadCurrentUserPermissions(crmUser) {
     const role = crmUser?.cargo;
     if (!role) return [];
@@ -1310,18 +1324,31 @@
                 <span id="sg-crm-lead-interaction" style="font-weight: 600; color: #fff; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">-</span>
               </div>
 
-              <div id="sg-crm-lead-assigned-row" style="display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; background: rgba(29, 47, 90, 0.2); border: 1px solid #1d2f5a; border-radius: 6px; margin-top: 4px;">
-                <div style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: #d4af37; font-weight: 600;">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink: 0;"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-                  Responsável
+              <div id="sg-crm-lead-assigned-row" style="display: none; flex-direction: column; gap: 4px; padding: 8px 10px; background: rgba(29, 47, 90, 0.2); border: 1px solid #1d2f5a; border-radius: 6px; margin-top: 4px;">
+                <div style="display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 11px; color: #d4af37; font-weight: 600;">
+                  <span style="display: flex; align-items: center; gap: 6px;">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink: 0;"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                    Responsável
+                  </span>
+                  <button type="button" id="sg-crm-assignee-edit" class="sg-edit-pencil" aria-label="Alterar responsável" title="Alterar responsável">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4z"/></svg>
+                  </button>
                 </div>
-                <div style="display: flex; align-items: center; gap: 6px; font-size: 11px;">
+                <div id="sg-crm-assignee-name-row" style="display: flex; align-items: center; gap: 6px; font-size: 11px;">
                   <span style="color: #8a9fc4; width: 40px; flex-shrink: 0;">Nome:</span>
                   <span id="sg-crm-lead-assigned-name" style="color: #fff; font-weight: 500;">Sem responsável</span>
                 </div>
-                <div style="display: flex; align-items: center; gap: 6px; font-size: 11px;">
+                <div id="sg-crm-assignee-email-row" style="display: flex; align-items: center; gap: 6px; font-size: 11px;">
                   <span style="color: #8a9fc4; width: 40px; flex-shrink: 0;">E-mail:</span>
                   <span id="sg-crm-lead-assigned-email" style="color: #fff; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">-</span>
+                </div>
+                <div id="sg-crm-assignee-editor" style="display: none; flex-direction: column; gap: 6px; margin-top: 4px;">
+                  <select id="sg-crm-assignee-select" style="width: 100%; padding: 7px 8px; border-radius: 6px; border: 1px solid #30477b; background: #101d3d; color: #fff; font-size: 11px;"></select>
+                  <div style="display: flex; gap: 6px;">
+                    <button type="button" id="sg-crm-assignee-save" class="sg-query-btn" style="flex: 1; padding: 7px; margin: 0;">Salvar</button>
+                    <button type="button" id="sg-crm-assignee-cancel" style="padding: 7px 10px; border: 1px solid #30477b; border-radius: 6px; background: transparent; color: #8a9fc4; cursor: pointer;">Cancelar</button>
+                  </div>
+                  <div id="sg-crm-assignee-status" style="font-size: 10px; color: #8a9fc4;"></div>
                 </div>
               </div>
 
@@ -1565,6 +1592,9 @@
     panel.querySelector('#sg-crm-edit-toggle').addEventListener('click', () => setCrmEditMode(true));
     panel.querySelector('#sg-crm-cancel-edit').addEventListener('click', () => setCrmEditMode(false));
     panel.querySelector('#sg-crm-save-edit').addEventListener('click', handleCrmEditSave);
+    panel.querySelector('#sg-crm-assignee-edit').addEventListener('click', openAssigneeEditor);
+    panel.querySelector('#sg-crm-assignee-cancel').addEventListener('click', closeAssigneeEditor);
+    panel.querySelector('#sg-crm-assignee-save').addEventListener('click', saveLeadAssignee);
 
     panel.querySelector('#seven-gold-create-return-btn').addEventListener('click', (event) => {
       const button = event.currentTarget;
@@ -2327,6 +2357,88 @@
     details.classList.toggle('is-editing', enabled);
   }
 
+  function closeAssigneeEditor() {
+    const editor = document.getElementById('sg-crm-assignee-editor');
+    const status = document.getElementById('sg-crm-assignee-status');
+    if (editor) editor.style.display = 'none';
+    if (status) status.textContent = '';
+  }
+
+  async function openAssigneeEditor() {
+    if (!canViewLeadAssignee(currentCrmUser?.cargo)) return;
+
+    const row = document.getElementById('sg-crm-lead-assigned-row');
+    const editor = document.getElementById('sg-crm-assignee-editor');
+    const select = document.getElementById('sg-crm-assignee-select');
+    const status = document.getElementById('sg-crm-assignee-status');
+    if (!row || !editor || !select || !status) return;
+
+    editor.style.display = 'flex';
+    select.disabled = true;
+    status.style.color = '#8a9fc4';
+    status.textContent = 'Carregando vendedores...';
+
+    const response = await chrome.runtime.sendMessage({ type: 'GET_LEAD_ASSIGNEES' });
+    if (!response?.ok) {
+      status.style.color = '#f44336';
+      status.textContent = response?.error || 'Não foi possível carregar os responsáveis.';
+      return;
+    }
+
+    select.innerHTML = '';
+    (response.users || []).forEach((user) => {
+      const option = document.createElement('option');
+      option.value = user.email;
+      option.textContent = `${user.nome || user.email} (${String(user.cargo || '').toUpperCase()})`;
+      select.appendChild(option);
+    });
+    select.value = row.dataset.assignedEmail || '';
+    select.disabled = false;
+    status.textContent = '';
+  }
+
+  async function saveLeadAssignee() {
+    if (!canViewLeadAssignee(currentCrmUser?.cargo)) return;
+
+    const details = document.getElementById('seven-gold-crm-lead-details');
+    const row = document.getElementById('sg-crm-lead-assigned-row');
+    const select = document.getElementById('sg-crm-assignee-select');
+    const saveBtn = document.getElementById('sg-crm-assignee-save');
+    const status = document.getElementById('sg-crm-assignee-status');
+    const leadId = details?.dataset.leadId || '';
+    const email = select?.value || '';
+    if (!leadId || !email) {
+      status.style.color = '#ff9800';
+      status.textContent = 'Selecione um responsável.';
+      return;
+    }
+
+    saveBtn.disabled = true;
+    status.style.color = '#8a9fc4';
+    status.textContent = 'Atualizando responsável...';
+
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: 'ASSIGN_LEAD_RESPONSIBLE',
+        lead_id: leadId,
+        assigned_to_email: email,
+      });
+      if (!response?.ok || !response.lead) {
+        throw new Error(response?.error || 'Não foi possível alterar o responsável.');
+      }
+
+      document.getElementById('sg-crm-lead-assigned-name').textContent = response.lead.assigned_to_name || '-';
+      document.getElementById('sg-crm-lead-assigned-email').textContent = response.lead.assigned_to_email || '-';
+      row.dataset.assignedEmail = response.lead.assigned_to_email || '';
+      closeAssigneeEditor();
+    } catch (error) {
+      status.style.color = '#f44336';
+      status.textContent = error.message;
+    } finally {
+      saveBtn.disabled = false;
+    }
+  }
+
   async function handleCrmEditSave() {
     const details = document.getElementById('seven-gold-crm-lead-details');
     const statusEl = document.getElementById('seven-gold-crm-lead-status');
@@ -2500,6 +2612,9 @@
       const assignedEmailAfterEdit = lead.assigned_to_email || lead.created_by_email || null;
       const assignedNameElAfterEdit = document.getElementById('sg-crm-lead-assigned-name');
       const assignedEmailElAfterEdit = document.getElementById('sg-crm-lead-assigned-email');
+      const assignedRowAfterEdit = document.getElementById('sg-crm-lead-assigned-row');
+      assignedRowAfterEdit.style.display = canViewLeadAssignee(currentCrmUser?.cargo) ? 'flex' : 'none';
+      assignedRowAfterEdit.dataset.assignedEmail = assignedEmailAfterEdit || '';
       if (assignedNameAfterEdit || assignedEmailAfterEdit) {
         assignedNameElAfterEdit.textContent = assignedNameAfterEdit || '-';
         assignedEmailElAfterEdit.textContent = assignedEmailAfterEdit || '-';
@@ -2623,6 +2738,10 @@
             const assignedEmail = lead.assigned_to_email || lead.created_by_email || null;
             const assignedNameEl = document.getElementById('sg-crm-lead-assigned-name');
             const assignedEmailEl = document.getElementById('sg-crm-lead-assigned-email');
+            const assignedRow = document.getElementById('sg-crm-lead-assigned-row');
+            assignedRow.style.display = canViewLeadAssignee(currentCrmUser?.cargo) ? 'flex' : 'none';
+            assignedRow.dataset.assignedEmail = assignedEmail || '';
+            closeAssigneeEditor();
             if (assignedName || assignedEmail) {
               assignedNameEl.textContent = assignedName || '-';
               assignedEmailEl.textContent = assignedEmail || '-';
