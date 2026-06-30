@@ -2496,8 +2496,8 @@
       document.getElementById('sg-crm-installment-value').textContent = formatMoneyDisplay(leadDbInstallment);
       document.getElementById('sg-crm-lead-note').textContent = leadDbNote || 'Não informado';
 
-      const assignedNameAfterEdit = lead.assigned_to_name || null;
-      const assignedEmailAfterEdit = lead.assigned_to_email || null;
+      const assignedNameAfterEdit = lead.assigned_to_name || lead.created_by_name || null;
+      const assignedEmailAfterEdit = lead.assigned_to_email || lead.created_by_email || null;
       const assignedNameElAfterEdit = document.getElementById('sg-crm-lead-assigned-name');
       const assignedEmailElAfterEdit = document.getElementById('sg-crm-lead-assigned-email');
       if (assignedNameAfterEdit || assignedEmailAfterEdit) {
@@ -2619,8 +2619,8 @@
             detailsEl.dataset.lookupPhone = normalizeCrmPhone(leadPhone);
             detailsEl.dataset.leadId = String(lead.id);
 
-            const assignedName = lead.assigned_to_name || null;
-            const assignedEmail = lead.assigned_to_email || null;
+            const assignedName = lead.assigned_to_name || lead.created_by_name || null;
+            const assignedEmail = lead.assigned_to_email || lead.created_by_email || null;
             const assignedNameEl = document.getElementById('sg-crm-lead-assigned-name');
             const assignedEmailEl = document.getElementById('sg-crm-lead-assigned-email');
             if (assignedName || assignedEmail) {
@@ -3376,7 +3376,7 @@
     }
 
     const nameSpan = crmUser?.nome || 'Usuário';
-    const cargoSpan = crmUser?.cargo ? ` — ${crmUser.cargo}` : '';
+    const cargoSpan = crmUser?.cargo ? ` — ${String(crmUser.cargo).toUpperCase()}` : '';
     userEl.textContent = `${nameSpan}${cargoSpan}`;
     userEl.title = crmUser?.email || '';
 
