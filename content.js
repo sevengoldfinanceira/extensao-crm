@@ -2656,6 +2656,36 @@
     }
   }
 
+  function showLeadAssignedElsewhere(statusEl, responsible = {}) {
+    const wrapper = document.createElement('span');
+    wrapper.style.cssText = 'display: flex; flex-direction: column; gap: 3px; line-height: 1.35;';
+
+    const title = document.createElement('strong');
+    title.textContent = 'Este número já está no CRM com outro vendedor.';
+    wrapper.appendChild(title);
+
+    const name = document.createElement('span');
+    name.append('Responsável: ');
+    const nameValue = document.createElement('strong');
+    nameValue.textContent = responsible.name || 'Sem responsável';
+    name.appendChild(nameValue);
+    wrapper.appendChild(name);
+
+    const email = document.createElement('span');
+    email.append('E-mail: ');
+    const emailValue = document.createElement('strong');
+    emailValue.textContent = responsible.email || 'Não informado';
+    email.appendChild(emailValue);
+    wrapper.appendChild(email);
+
+    const guidance = document.createElement('span');
+    guidance.textContent = 'Solicite a um coordenador a transferência da titularidade.';
+    wrapper.appendChild(guidance);
+
+    statusEl.replaceChildren(wrapper);
+    statusEl.style.color = '#ff9800';
+  }
+
   async function handleCrmQuery() {
     if (!canUseExtensionArea("crm_pipeline")) {
       showPermissionError("Você não tem permissão para consultar leads.");
@@ -2775,6 +2805,8 @@
             statusEl.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: #f44336; flex-shrink: 0;"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg> <span style="line-height: 1.3;">Não foi possível confirmar este lead no CRM. Tente consultar novamente.</span>`;
             statusEl.style.color = '#f44336'; // vermelho
           }
+        } else if (response.assigned_elsewhere === true) {
+          showLeadAssignedElsewhere(statusEl, response.responsible);
         } else {
           statusEl.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: #ff9800; flex-shrink: 0;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg> <span style="line-height: 1.3;">Este número ainda não está no funil. Capture e salve o lead primeiro.</span>`;
           statusEl.style.color = '#ff9800'; // laranja
