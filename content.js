@@ -260,15 +260,55 @@
           "[Seven Gold CRM][Permissões] Erro ao buscar permissões:",
           error
         );
-        return [];
+        return [
+          { area_key: "crm_pipeline", permitido: true },
+          { area_key: "calendario", permitido: true },
+          { area_key: "tarefas", permitido: true },
+          { area_key: "retornos", permitido: true },
+        ];
       }
-      return data || [];
+      if (!data || data.length === 0) {
+        console.log(
+          "[Seven Gold CRM][Permissões] Nenhuma permissão encontrada para cargo:",
+          normalizeRole(role),
+          "- liberando acesso padrão."
+        );
+        return [
+          { area_key: "crm_pipeline", permitido: true },
+          { area_key: "calendario", permitido: true },
+          { area_key: "tarefas", permitido: true },
+          { area_key: "retornos", permitido: true },
+        ];
+      }
+      const extensionKeys = ['crm_pipeline', 'calendario', 'tarefas', 'retornos'];
+      const hasExtensionKeys = data.some(p => extensionKeys.includes(p.area_key));
+      if (!hasExtensionKeys) {
+        console.log(
+          "[Seven Gold CRM][Permissões] Permissões encontradas para cargo:",
+          normalizeRole(role),
+          "mas nenhuma é da extensão (chaves:",
+          data.map(p => p.area_key).join(', '),
+          "). Liberando acesso padrão."
+        );
+        return [
+          { area_key: "crm_pipeline", permitido: true },
+          { area_key: "calendario", permitido: true },
+          { area_key: "tarefas", permitido: true },
+          { area_key: "retornos", permitido: true },
+        ];
+      }
+      return data;
     } catch (err) {
       console.error(
         "[Seven Gold CRM][Permissões] Falha ao consultar permissões:",
         err
       );
-      return [];
+      return [
+        { area_key: "crm_pipeline", permitido: true },
+        { area_key: "calendario", permitido: true },
+        { area_key: "tarefas", permitido: true },
+        { area_key: "retornos", permitido: true },
+      ];
     }
   }
 
@@ -1096,6 +1136,8 @@
       loadTasksDesteLead();
     } else if (tabName === 'returns') {
       loadTodosOsRetornos();
+    } else if (tabName === 'view') {
+      setTimeout(() => captureAndQueryLead(), 300);
     }
   }
 
@@ -1665,6 +1707,12 @@
     const anotacao = form.observacao.value;
 
     const actor = await getCurrentActor();
+    const assigneeRow = document.getElementById('sg-crm-lead-assigned-row');
+    const assigneeNameText = document.getElementById('sg-crm-lead-assigned-name')?.textContent?.trim();
+    const assignedEmail = assigneeRow?.dataset.assignedEmail || actor?.email || null;
+    const assignedName = assigneeNameText && assigneeNameText !== 'Sem responsável' && assigneeNameText !== '-'
+      ? assigneeNameText
+      : (actor?.name || actor?.email || null);
 
     const payload = {
       lead_id: leadId,
@@ -1672,15 +1720,17 @@
       lead_telefone: leadPhone && leadPhone !== '-' ? leadPhone : null,
       type,
       scheduled_at: new Date(dataHora).toISOString(),
-      internal_note: anotacao || null
+      internal_note: anotacao || null,
+      assigned_to_email: assignedEmail,
+      assigned_to_name: assignedName
     };
 
     if (actor) {
-      payload.created_by_email = actor.email;
-      payload.created_by_name = actor.name;
-
       console.log("[Seven Gold CRM][Actor] Usuário da ação:", actor);
-      console.log("[Seven Gold CRM][Actor] Payload com usuário:", payload);
+      console.log("[Seven Gold CRM][Actor] Responsável da tarefa:", {
+        email: assignedEmail,
+        name: assignedName
+      });
     }
 
     if (type === 'whatsapp_message') {
@@ -3040,6 +3090,7 @@
       lead_id: leadAtual.id,
       nome_cliente: leadAtual.nome || leadAtual.name || "Cliente sem nome",
       telefone_cliente: leadAtual.telefone || leadAtual.phone || "",
+      usuario_id: actor?.id || null,
       nome_usuario: actor ? actor.name : "Extensão WhatsApp",
       data_agendamento: date,
       hora_agendamento: time,
@@ -3826,6 +3877,42 @@
     console.log("[Seven Gold CRM][Calendário] Agendamentos retornados:", sanitizedData);
 
     calendarAppointments = data || [];
+
+    const isSupervisor = canViewLeadAssignee(currentCrmUser?.cargo);
+    if (!isSupervisor && currentCrmUser?.email) {
+      const myEmail = currentCrmUser.email.trim().toLowerCase();
+      const phones = [...new Set(calendarAppointments.map(a => normalizeCrmPhone(a.telefone_cliente || a.phone || a.telefone || '')).filter(Boolean))];
+      const leadOwnerMap = {};
+
+      console.log("[Seven Gold CRM][Calendário] Telefones para buscar:", phones);
+
+      await Promise.all(phones.map(async (phone) => {
+        try {
+          const resp = await chrome.runtime.sendMessage({ type: 'GET_LEAD_BY_PHONE', phone });
+          console.log("[Seven Gold CRM][Calendário] Resposta lead:", phone, resp?.ok, resp?.found, resp?.lead?.assigned_to_email);
+          if (resp?.found !== false && resp?.lead) {
+            leadOwnerMap[phone] = (resp.lead.assigned_to_email || resp.lead.owner_email || '').trim().toLowerCase();
+          }
+        } catch (e) {
+          console.warn("[Seven Gold CRM][Calendário] Erro ao buscar lead por telefone:", phone, e);
+        }
+      }));
+
+      console.log("[Seven Gold CRM][Calendário] Mapa lead->email:", leadOwnerMap);
+
+      calendarAppointments = calendarAppointments.filter(a => {
+        const assignedEmail = (a.assigned_to_email || '').trim().toLowerCase();
+        if (assignedEmail) {
+          return assignedEmail === myEmail;
+        }
+        const phone = normalizeCrmPhone(a.telefone_cliente || a.phone || a.telefone || '');
+        if (phone && leadOwnerMap[phone]) {
+          return leadOwnerMap[phone] === myEmail;
+        }
+        return false;
+      });
+      console.log("[Seven Gold CRM][Calendário] Meu email:", myEmail, "- Agendamentos após filtro:", calendarAppointments.length);
+    }
     renderCalendarWeek();
   }
 

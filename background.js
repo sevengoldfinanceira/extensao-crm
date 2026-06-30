@@ -44,10 +44,20 @@ function safeStringify(value) {
 const DEBUG = false;
 
 async function fetchCrmApi(url, options = {}) {
-  const { session } = await getStoredAuthSession();
-  const accessToken = session?.access_token;
+  let { session } = await getStoredAuthSession();
+  let accessToken = session?.access_token;
+
   if (!accessToken) {
     throw new Error('Sessão do CRM ausente ou expirada. Entre novamente com o Google.');
+  }
+
+  if (session?.refresh_token && isTokenExpired(session)) {
+    try {
+      session = await refreshAccessToken(session.refresh_token);
+      accessToken = session.access_token;
+    } catch (e) {
+      console.warn("[Seven Gold CRM][Auth][BG] Falha ao renovar token:", e.message);
+    }
   }
 
   return fetch(url, {
@@ -57,6 +67,43 @@ async function fetchCrmApi(url, options = {}) {
       Authorization: `Bearer ${accessToken}`,
     },
   });
+}
+
+function isTokenExpired(session) {
+  if (!session?.expires_in || !session?._saved_at) return false;
+  const elapsed = Date.now() - session._saved_at;
+  return elapsed > (session.expires_in - 60) * 1000;
+}
+
+async function refreshAccessToken(refreshToken) {
+  const response = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'apikey': SUPABASE_AUTH_KEY,
+    },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  });
+
+  const body = await response.json();
+
+  if (!response.ok) {
+    throw new Error(body.error_description || body.error || 'Falha ao renovar token');
+  }
+
+  const { session } = await getStoredAuthSession();
+  const newSession = {
+    ...session,
+    access_token: body.access_token,
+    refresh_token: body.refresh_token || refreshToken,
+    expires_in: body.expires_in,
+    _saved_at: Date.now(),
+  };
+
+  await chrome.storage.local.set({ sevenGoldAuthSession: newSession });
+  console.log("[Seven Gold CRM][Auth][BG] Token renovado com sucesso.");
+
+  return newSession;
 }
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -135,6 +182,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       });
 
     return true; // keep channel open for async response
+  }
+
+  if (message.type === 'GET_LEAD_BY_ID') {
+    const url = `${CRM_API_BASE_URL}/api/leads/${encodeURIComponent(message.leadId)}`;
+
+    fetchCrmApi(url)
+      .then(async (r) => {
+        if (r.status === 404) {
+          return sendResponse({ ok: true, found: false, lead: null });
+        }
+        if (!r.ok) {
+          throw new Error(`HTTP ${r.status}`);
+        }
+        const body = await r.json();
+        sendResponse(body);
+      })
+      .catch((err) => {
+        sendResponse({ ok: false, error: err.message });
+      });
+
+    return true;
   }
 
   if (message.type === 'GET_LEAD_ASSIGNEES') {
@@ -279,13 +347,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'INSERT_APPOINTMENT') {
     const url = `${SUPABASE_URL}/rest/v1/appointments`;
-    
-    fetch(url, {
+
+    fetchCrmApi(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'apikey': SUPABASE_PUBLISHABLE_KEY,
-        'Authorization': `Bearer ${SUPABASE_PUBLISHABLE_KEY}`,
         'Prefer': 'return=representation'
       },
       body: JSON.stringify(message.payload)
@@ -989,6 +1056,7 @@ async function handleGoogleLoginInBackground() {
     refresh_token: tokenResponse.refresh_token,
     expires_in: tokenResponse.expires_in,
     token_type: tokenResponse.token_type || "bearer",
+    _saved_at: Date.now(),
     user,
   };
 
