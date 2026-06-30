@@ -61,6 +61,9 @@ async function fetchCrmApi(url, options = {}) {
 
 chrome.runtime.onInstalled.addListener(() => {
   console.log('[Seven Gold CRM] Extension installed.');
+  chrome.storage.local.remove('seven_gold_leads').catch((error) => {
+    console.warn('[Seven Gold CRM] Não foi possível limpar o cache offline antigo:', error);
+  });
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

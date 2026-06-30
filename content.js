@@ -10,7 +10,6 @@
     }
   }
 
-  const STORAGE_KEY = 'seven_gold_leads';
   const PANEL_ID = 'seven-gold-crm-panel';
   const TOGGLE_ID = 'seven-gold-crm-toggle';
   const FORM_ID = 'seven-gold-crm-form';
@@ -297,7 +296,7 @@
   }
 
   /* ------------------------------------------------------------------ */
-  /*  Data Service — HTTP API first, chrome.storage.local as fallback    */
+  /*  Data Service — leads are saved online only                         */
   /* ------------------------------------------------------------------ */
 
   const DataService = {
@@ -352,38 +351,15 @@
         }
 
         const errorMsg = (result && result.error) || 'Resposta inválida do servidor';
-        console.warn('[Seven Gold CRM] API retornou erro:', errorMsg);
-        const localResult = await saveLocally(apiPayload);
-        return { ...localResult, errorDetail: errorMsg };
+        console.error('[Seven Gold CRM] API retornou erro:', errorMsg);
+        return { ok: false, source: 'api', error: errorMsg };
       } catch (err) {
-        console.warn(
-          '[Seven Gold CRM] API indisponível, salvando offline.'
-        );
-        const localResult = await saveLocally(apiPayload);
-        return { ...localResult, errorDetail: err.message };
+        const errorMsg = err?.message || 'Não foi possível conectar ao CRM.';
+        console.error('[Seven Gold CRM] Falha ao salvar lead online:', errorMsg);
+        return { ok: false, source: 'api', error: errorMsg };
       }
     },
   };
-
-  async function saveLocally(apiPayload) {
-    if (!chrome?.storage?.local) {
-      console.warn('[Seven Gold CRM] chrome.storage.local não disponível — impossível salvar localmente.');
-      return { ok: false, source: 'local', error: 'Armazenamento local não disponível' };
-    }
-
-    console.log('[Seven Gold CRM] Salvando localmente (fallback offline).');
-    const result = await chrome.storage.local.get(STORAGE_KEY);
-    const leads = result[STORAGE_KEY] || [];
-    const lead = {
-      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
-      ...apiPayload,
-      savedLocally: true,
-      createdAt: new Date().toISOString(),
-    };
-    leads.push(lead);
-    await chrome.storage.local.set({ [STORAGE_KEY]: leads });
-    return { ok: true, source: 'local', lead };
-  }
 
   /* ------------------------------------------------------------------ */
   /*  Capture current WhatsApp Web conversation                          */
@@ -2232,23 +2208,19 @@
     try {
       const result = await DataService.saveLead(data);
       if (result.ok) {
-        if (result.source === 'api') {
-          showStatus('Lead salvo no funil com sucesso.', 'success');
+        showStatus('Lead salvo no funil com sucesso.', 'success');
 
-          const savedLead = result.lead;
-          if (savedLead?.id) {
-            const logActor = await getCurrentActor().catch(() => null);
-            await createLeadActivityLog({
-              leadId: savedLead.id,
-              actionType: "lead_created",
-              actionLabel: "Lead criado pela extensão",
-              description: `Lead capturado pelo WhatsApp e atribuído para ${logActor?.name || 'desconhecido'}.`,
-              oldValue: null,
-              newValue: logActor?.email || null,
-            });
-          }
-        } else {
-          showStatus(`Salvo offline. Motivo: ${result.errorDetail || 'não informado'}`, 'warning');
+        const savedLead = result.lead;
+        if (savedLead?.id) {
+          const logActor = await getCurrentActor().catch(() => null);
+          await createLeadActivityLog({
+            leadId: savedLead.id,
+            actionType: "lead_created",
+            actionLabel: "Lead criado pela extensão",
+            description: `Lead capturado pelo WhatsApp e atribuído para ${logActor?.name || 'desconhecido'}.`,
+            oldValue: null,
+            newValue: logActor?.email || null,
+          });
         }
 
         // Limpeza automática após delay de 1000ms
@@ -2263,11 +2235,7 @@
             crmStatus.style.color = '#ff9800';
           }
 
-          if (result.source === 'api') {
-            showStatus('Lead salvo no funil com sucesso. Campos limpos, pronto para o próximo lead.', 'success');
-          } else {
-            showStatus(`Salvo offline. Motivo: ${result.errorDetail || 'não informado'}. Campos limpos, pronto para o próximo lead.`, 'warning');
-          }
+          showStatus('Lead salvo no funil com sucesso. Campos limpos, pronto para o próximo lead.', 'success');
         }, 1000);
       } else if (result.action === 'duplicate') {
         showStatus('Número já cadastrado no CRM. Edite esse lead diretamente no CRM ou use outro número.', 'warning');
