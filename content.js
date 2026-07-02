@@ -194,8 +194,9 @@
     { value: 'primeiro_contato', label: 'Primeiro Contato' },
     { value: 'agendamento', label: 'Agendamento' },
     { value: 'cliente_em_loja', label: 'Cliente em Loja' },
-    { value: 'proposta_enviada', label: 'Proposta Enviada' },
-    { value: 'venda_fechada', label: 'Venda Fechada' }
+    { value: 'proposta_enviada', label: 'Em Aprovação' },
+    { value: 'venda_fechada', label: 'Venda Fechada' },
+    { value: 'cancelado', label: 'Lixeira' }
   ];
 
   function getStageLabel(value) {
@@ -1166,7 +1167,6 @@
       );
       const serviceLeadIds = new Set();
       const storeLeadIds = new Set();
-      const approvalLeadIds = new Set();
       const closedLeadIds = new Set();
       const cancelledLeadIds = new Set();
       const historicalLeadIds = new Set(stageEvents.map((event) => String(event.lead_id)));
@@ -1178,7 +1178,6 @@
         const previousStatus = normalizeStage(event.old_value);
         if (status === 'primeiro_contato' || previousStatus === 'primeiro_contato') serviceLeadIds.add(leadId);
         if (status === 'cliente_em_loja') storeLeadIds.add(leadId);
-        if (['em_aprovacao', 'proposta_enviada'].includes(status)) approvalLeadIds.add(leadId);
         if (status === 'venda_fechada') closedLeadIds.add(leadId);
         if (status === 'cancelado') cancelledLeadIds.add(leadId);
       });
@@ -1191,7 +1190,6 @@
         const status = normalizeStage(lead.status);
         if (pipelineOrder.indexOf(status) >= pipelineOrder.indexOf('primeiro_contato')) serviceLeadIds.add(leadId);
         if (['cliente_em_loja', 'em_aprovacao', 'proposta_enviada', 'venda_fechada', 'nao_quer', 'não_quer', 'nao_tem_interesse', 'perdido'].includes(status)) storeLeadIds.add(leadId);
-        if (['em_aprovacao', 'proposta_enviada'].includes(status)) approvalLeadIds.add(leadId);
         if (status === 'venda_fechada') closedLeadIds.add(leadId);
         if (status === 'cancelado') cancelledLeadIds.add(leadId);
       });
@@ -1204,7 +1202,9 @@
       const notAttended = Math.max(receivedLeads - inService, 0);
       const totalAppointments = scheduledLeadKeys.size;
       const storeClients = storeLeadIds.size;
-      const inApproval = approvalLeadIds.size;
+      const inApproval = leads.filter((lead) =>
+        ['em_aprovacao', 'proposta_enviada'].includes(normalizeStage(lead.status))
+      ).length;
       const closedLeads = closedLeadIds.size;
       const trash = cancelledLeadIds.size;
       const notWant = leads.filter((lead) => normalizeStage(lead.status) === 'cliente_em_loja').length;
@@ -1433,7 +1433,7 @@
             </div>
             <div class="sg-dash-metric-card" style="--card-accent:#ef4444;--card-icon-bg:rgba(239,68,68,0.15);">
               <div class="sg-dash-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></div>
-              <div class="sg-dash-title">Cancelados</div>
+              <div class="sg-dash-title">Lixeira</div>
               <div class="sg-dash-row"><span class="sg-dash-value" id="sg-dash-trash">0</span><span class="sg-dash-pct" id="sg-dash-trash-pct">0%</span></div>
             </div>
           </div>
@@ -1480,7 +1480,7 @@
 
           <input type="hidden" name="etapa" value="lead_recebido" />
 
-          <label class="sg-field">
+          <label class="sg-field sg-field--wide">
             <span class="sg-label">Anotações</span>
             <textarea name="observacoes" rows="3" placeholder="Anotações sobre o lead..."></textarea>
           </label>
@@ -3175,7 +3175,8 @@
       agendamento: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 6px; flex-shrink: 0;"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>',
       cliente_em_loja: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 6px; flex-shrink: 0;"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>',
       proposta_enviada: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 6px; flex-shrink: 0;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
-      venda_fechada: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 6px; flex-shrink: 0;"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6M18 9h1.5a2.5 2.5 0 0 0 0-5H18M4 22h16M10 14.66V17c0 .55-.45 1-1 1H4v2h16v-2h-5c-.55 0-1-.45-1-1v-2.34M12 2a4 4 0 0 0-4 4v4.5A4.5 4.5 0 0 0 12.5 15h0a4.5 4.5 0 0 0 4.5-4.5V6a4 4 0 0 0-4-4z"/></svg>'
+      venda_fechada: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 6px; flex-shrink: 0;"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6M18 9h1.5a2.5 2.5 0 0 0 0-5H18M4 22h16M10 14.66V17c0 .55-.45 1-1 1H4v2h16v-2h-5c-.55 0-1-.45-1-1v-2.34M12 2a4 4 0 0 0-4 4v4.5A4.5 4.5 0 0 0 12.5 15h0a4.5 4.5 0 0 0 4.5-4.5V6a4 4 0 0 0-4-4z"/></svg>',
+      cancelado: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 6px; flex-shrink: 0;"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>'
     };
 
     CRM_STAGES.forEach(stage => {

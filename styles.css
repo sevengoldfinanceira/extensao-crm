@@ -616,7 +616,9 @@
 }
 
 .sg-tab-content[data-tab="capture"] .sg-form {
-  gap: 6px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
 }
 
 .sg-tab-content[data-tab="capture"] .sg-field {
@@ -624,21 +626,28 @@
 }
 
 .sg-tab-content[data-tab="capture"] .sg-label {
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1.2;
 }
 
 .sg-tab-content[data-tab="capture"] .sg-field input {
-  min-height: 40px;
-  padding: 8px 10px;
-  font-size: 12.5px;
+  min-height: 46px;
+  padding: 10px 12px;
+  font-size: 13px;
 }
 
 .sg-tab-content[data-tab="capture"] .sg-field textarea[name="observacoes"] {
-  min-height: 60px;
-  height: 60px;
-  padding: 8px 10px;
-  font-size: 12.5px;
+  min-height: 90px;
+  height: 90px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.sg-tab-content[data-tab="capture"] .sg-field--wide,
+.sg-tab-content[data-tab="capture"] .sg-status,
+.sg-tab-content[data-tab="capture"] .sg-form-section-title,
+.sg-tab-content[data-tab="capture"] .sg-submit {
+  grid-column: 1 / -1;
 }
 
 .sg-tab-content[data-tab="capture"] .sg-form-section-title {
@@ -655,10 +664,10 @@
 }
 
 .sg-tab-content[data-tab="capture"] .sg-submit {
-  min-height: 42px;
+  min-height: 48px;
   margin-top: 2px;
-  padding: 9px;
-  font-size: 13px;
+  padding: 11px;
+  font-size: 14px;
 }
 
 /* ================================================================== */
