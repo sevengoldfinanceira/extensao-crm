@@ -69,6 +69,48 @@ async function fetchCrmApi(url, options = {}) {
   });
 }
 
+async function getAuthorizedLeadIds() {
+  const response = await fetchCrmApi(`${CRM_API_BASE_URL}/api/permissions/save`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pipeline_action: 'list_leads' }),
+  });
+  const text = await response.text();
+  let body = text;
+  try { body = JSON.parse(text); } catch {}
+  if (!response.ok || body?.ok !== true) {
+    throw new Error(body?.error || body?.message || `Erro ao validar tarefas (HTTP ${response.status}).`);
+  }
+  return new Set((body.leads || []).map((lead) => String(lead.id)));
+}
+
+async function assertTaskAuthorized(taskId) {
+  const taskUrl = `${CRM_API_BASE_URL}/api/tasks/list`;
+  const [authorizedLeadIds, response] = await Promise.all([
+    getAuthorizedLeadIds(),
+    fetchCrmApi(taskUrl),
+  ]);
+
+  const responseText = await response.text();
+  let body = [];
+  try { body = JSON.parse(responseText); } catch {}
+
+  if (!response.ok) {
+    throw new Error(responseText || `Erro ao validar a tarefa (HTTP ${response.status}).`);
+  }
+
+  const tasks = Array.isArray(body) ? body : (body?.tasks || []);
+  const task = tasks.find((item) => String(item.id) === String(taskId));
+  if (!task) {
+    throw new Error('Tarefa não encontrada.');
+  }
+  if (!authorizedLeadIds.has(String(task.lead_id))) {
+    throw new Error('Você não tem permissão para alterar uma tarefa de outro responsável.');
+  }
+
+  return task;
+}
+
 function isTokenExpired(session) {
   if (!session?.expires_in || !session?._saved_at) return false;
   const elapsed = Date.now() - session._saved_at;
@@ -395,6 +437,45 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // keep channel open for async response
   }
 
+  if (message.type === 'UPDATE_APPOINTMENT') {
+    const appointmentId = message.id;
+    const updateData = message.data || {};
+    const url = `${SUPABASE_URL}/rest/v1/appointments?id=eq.${encodeURIComponent(appointmentId)}`;
+
+    getStoredAuthSession().then(async ({ session }) => {
+      const accessToken = session?.access_token || SUPABASE_PUBLISHABLE_KEY;
+      try {
+        const response = await fetch(url, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': SUPABASE_PUBLISHABLE_KEY,
+            'Authorization': `Bearer ${accessToken}`,
+            'Prefer': 'return=representation'
+          },
+          body: JSON.stringify(updateData)
+        });
+        const responseText = await response.text();
+        let responseBody = responseText;
+        try { responseBody = JSON.parse(responseText); } catch {}
+
+        if (!response.ok) {
+          console.error(`[Seven Gold CRM][BG] UPDATE_APPOINTMENT HTTP ${response.status}:`, responseText);
+          sendResponse({ ok: false, error: responseText });
+          return;
+        }
+        const appointmentData = Array.isArray(responseBody) ? responseBody[0] : responseBody;
+        console.log('[Seven Gold CRM][BG] Agendamento atualizado:', appointmentData?.id);
+        sendResponse({ ok: true, appointment: appointmentData });
+      } catch (err) {
+        console.error('[Seven Gold CRM][BG] Falha de rede no UPDATE_APPOINTMENT:', err);
+        sendResponse({ ok: false, error: err.message });
+      }
+    });
+
+    return true;
+  }
+
   if (message.type === 'INSERT_LEAD_ACTIVITY_LOG' || message.type === 'GET_LEAD_ACTIVITY_LOGS') {
     getStoredAuthSession().then(async ({ session }) => {
       const accessToken = session?.access_token || SUPABASE_PUBLISHABLE_KEY;
@@ -458,20 +539,59 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === 'GET_DASHBOARD_DATA') {
+    const parseResponse = async (response, label) => {
+      const text = await response.text();
+      let body = text;
+      try { body = JSON.parse(text); } catch {}
+      if (!response.ok) {
+        const messageText = typeof body === 'object'
+          ? (body.error || body.message || safeStringify(body))
+          : body;
+        throw new Error(`${label}: ${messageText || `HTTP ${response.status}`}`);
+      }
+      return body;
+    };
+
+    Promise.all([
+      fetchCrmApi(`${CRM_API_BASE_URL}/api/permissions/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pipeline_action: 'list_leads' }),
+      }).then((response) => parseResponse(response, 'Leads')),
+      fetchCrmApi(`${CRM_API_BASE_URL}/api/tasks/list`)
+        .then((response) => parseResponse(response, 'Tarefas')),
+      fetchCrmApi(`${SUPABASE_URL}/rest/v1/appointments?select=id,lead_id,usuario_id,data_agendamento,hora_agendamento,status,created_at&order=data_agendamento.asc`, {
+        headers: { apikey: SUPABASE_PUBLISHABLE_KEY },
+      }).then((response) => parseResponse(response, 'Agendamentos')),
+    ])
+      .then(([leadResult, taskResult, appointments]) => {
+        sendResponse({
+          ok: true,
+          leads: leadResult?.leads || [],
+          tasks: Array.isArray(taskResult) ? taskResult : (taskResult?.tasks || []),
+          appointments: Array.isArray(appointments) ? appointments : [],
+        });
+      })
+      .catch((error) => {
+        console.error('[Seven Gold CRM][Dashboard] Erro:', error);
+        sendResponse({ ok: false, error: error.message });
+      });
+
+    return true;
+  }
+
   if (message.type === 'GET_TASKS') {
-    let url = `${SUPABASE_URL}/rest/v1/tasks?order=scheduled_at.asc`;
+    let url = `${CRM_API_BASE_URL}/api/tasks/list`;
     if (message.lead_id) {
-      url += `&lead_id=eq.${encodeURIComponent(message.lead_id)}`;
+      url += `?lead_id=${encodeURIComponent(message.lead_id)}`;
     }
     
-    fetch(url, {
-      method: 'GET',
-      headers: {
-        'apikey': SUPABASE_PUBLISHABLE_KEY,
-        'Authorization': `Bearer ${SUPABASE_PUBLISHABLE_KEY}`
-      }
-    })
-      .then(async (response) => {
+    Promise.all([
+      getAuthorizedLeadIds(),
+      fetchCrmApi(url)
+    ])
+      .then(async ([authorizedLeadIds, response]) => {
         const responseText = await response.text();
         let responseBody = responseText;
         try {
@@ -483,7 +603,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return;
         }
 
-        sendResponse({ ok: true, tasks: responseBody });
+        const tasks = Array.isArray(responseBody) ? responseBody : (responseBody?.tasks || []);
+        const scopedTasks = tasks
+          .filter((task) => authorizedLeadIds.has(String(task.lead_id)));
+        sendResponse({ ok: true, tasks: scopedTasks });
       })
       .catch((err) => {
         sendResponse({ ok: false, error: err.message });
@@ -493,18 +616,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'INSERT_TASK') {
-    const url = `${SUPABASE_URL}/rest/v1/tasks`;
-    
-    fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': SUPABASE_PUBLISHABLE_KEY,
-        'Authorization': `Bearer ${SUPABASE_PUBLISHABLE_KEY}`,
-        'Prefer': 'return=representation'
-      },
-      body: JSON.stringify(message.payload)
-    })
+    const url = `${CRM_API_BASE_URL}/api/permissions/save`;
+
+    getAuthorizedLeadIds()
+      .then((authorizedLeadIds) => {
+        if (!authorizedLeadIds.has(String(message.payload?.lead_id))) {
+          throw new Error('Você não pode criar tarefa para um lead de outro responsável.');
+        }
+        return fetchCrmApi(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            team_action: 'create_task',
+            team_data: {
+              ...message.payload,
+              note: message.payload?.internal_note || null,
+            },
+          })
+        });
+      })
       .then(async (response) => {
         const responseText = await response.text();
         let responseBody = responseText;
@@ -513,11 +645,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         } catch {}
 
         if (!response.ok) {
-          sendResponse({ ok: false, error: responseText });
+          const errorMessage = responseBody?.error || responseBody?.message || responseText;
+          sendResponse({ ok: false, error: errorMessage });
           return;
         }
 
-        const taskData = Array.isArray(responseBody) ? responseBody[0] : responseBody;
+        const taskData = responseBody?.task || (responseBody?.task_id ? {
+          ...message.payload,
+          id: responseBody.task_id,
+          status: 'pending',
+        } : (Array.isArray(responseBody) ? responseBody[0] : responseBody));
+        if (!taskData?.id) {
+          sendResponse({ ok: false, error: 'O CRM não retornou a tarefa criada.' });
+          return;
+        }
 
         // Agendar alarme diretamente do background service worker
         const when = new Date(taskData.scheduled_at).getTime();
@@ -538,30 +679,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'UPDATE_TASK') {
-    const url = `${SUPABASE_URL}/rest/v1/tasks?id=eq.${encodeURIComponent(message.id)}`;
+    const url = `${CRM_API_BASE_URL}/api/tasks/update`;
 
     function buildUpdateBody() {
-      const body = {
+      return {
+        id: message.id,
         status: message.status,
-        updated_at: new Date().toISOString(),
       };
-      if (message.data) {
-        if (message.data.completed_by_email) body.completed_by_email = message.data.completed_by_email;
-        if (message.data.completed_by_name) body.completed_by_name = message.data.completed_by_name;
-        if (message.data.completed_at) body.completed_at = message.data.completed_at;
-      }
-      return body;
     }
 
     function doTaskFetch(updateBody) {
       console.log("[Seven Gold CRM][BG] UPDATE_TASK body:", updateBody);
-      fetch(url, {
+      fetchCrmApi(url, {
         method: 'PATCH',
         headers: {
-          'Content-Type': 'application/json',
-          'apikey': SUPABASE_PUBLISHABLE_KEY,
-          'Authorization': `Bearer ${SUPABASE_PUBLISHABLE_KEY}`,
-          'Prefer': 'return=representation'
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify(updateBody)
       })
@@ -577,7 +709,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return;
         }
 
-        const taskData = Array.isArray(responseBody) ? responseBody[0] : responseBody;
+        const taskData = responseBody?.task || (Array.isArray(responseBody) ? responseBody[0] : responseBody);
         if (!taskData) {
           sendResponse({ ok: false, error: "Nenhuma tarefa foi atualizada. Verifique se possui permissão." });
           return;
@@ -595,26 +727,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       });
     }
 
-    if (message.data) {
-      doTaskFetch(buildUpdateBody());
-    } else {
-      // Fallback for alarm.js (no data) — try to read from stored user
-      chrome.storage.local.get(["sevenGoldCrmUser"]).then((stored) => {
-        const crmUser = stored.sevenGoldCrmUser;
-        const extraFields = {};
-        if (crmUser?.email) {
-          extraFields.completed_by_email = crmUser.email;
-          extraFields.completed_by_name = crmUser.nome || crmUser.name || crmUser.email;
-          if (message.status === 'done') {
-            extraFields.completed_at = new Date().toISOString();
-          }
-        }
-        const body = buildUpdateBody();
-        doTaskFetch({ ...body, ...extraFields });
-      }).catch(() => {
-        doTaskFetch(buildUpdateBody());
+    assertTaskAuthorized(message.id)
+      .then(() => doTaskFetch(buildUpdateBody()))
+      .catch((err) => {
+        sendResponse({ ok: false, error: err.message });
       });
-    }
 
     return true;
   }
@@ -809,15 +926,13 @@ chrome.runtime.onStartup.addListener(syncAllAlarms);
 
 async function syncAllAlarms() {
   try {
-    const url = `${SUPABASE_URL}/rest/v1/tasks?status=eq.pending`;
-    const response = await fetch(url, {
-      headers: {
-        'apikey': SUPABASE_PUBLISHABLE_KEY,
-        'Authorization': `Bearer ${SUPABASE_PUBLISHABLE_KEY}`
-      }
-    });
+    const authorizedLeadIds = await getAuthorizedLeadIds();
+    const url = `${CRM_API_BASE_URL}/api/tasks/list?status=pending`;
+    const response = await fetchCrmApi(url);
     if (response.ok) {
-      const tasks = await response.json();
+      const body = await response.json();
+      const tasks = (Array.isArray(body) ? body : (body?.tasks || []))
+        .filter((task) => authorizedLeadIds.has(String(task.lead_id)));
       for (const task of tasks) {
         const when = new Date(task.scheduled_at).getTime();
         if (when > Date.now()) {

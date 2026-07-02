@@ -710,6 +710,85 @@ body.sg-crm-panel-open #seven-gold-crm-toggle {
   letter-spacing: 0.5px;
 }
 
+/* Dashboard CRM-style cards */
+.sg-dash-metric-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 12px 12px;
+  border: 1px solid #1d2f5a;
+  border-top: 3px solid var(--card-accent, #3b82f6);
+  border-radius: 10px;
+  background: #0d1730;
+  overflow: hidden;
+  text-align: center;
+}
+
+.sg-dash-metric-card .sg-dash-icon {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: var(--card-icon-bg, rgba(59, 130, 246, 0.15));
+  color: var(--card-accent, #3b82f6);
+  flex-shrink: 0;
+}
+
+.sg-dash-metric-card .sg-dash-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.sg-dash-metric-card .sg-dash-title {
+  font-size: 9.5px;
+  color: #8a9fc4;
+  text-transform: uppercase;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  line-height: 1.3;
+}
+
+.sg-dash-metric-card .sg-dash-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 6px;
+}
+
+.sg-dash-metric-card .sg-dash-value {
+  font-size: 26px;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--card-accent, #fff);
+}
+
+.sg-dash-metric-card .sg-dash-pct {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--card-accent, #8a9fc4);
+  opacity: 0.85;
+}
+
+/* Dashboard date picker */
+#sg-dashboard-date {
+  padding: 3px 6px;
+  border: 1px solid #1d2f5a;
+  border-radius: 4px;
+  background: #081026;
+  color: #c4cee3;
+  font-size: 9px;
+  cursor: pointer;
+}
+
+#sg-dashboard-date::-webkit-calendar-picker-indicator {
+  filter: invert(0.7);
+  cursor: pointer;
+}
+
 .sg-empty-state {
   padding: 14px 10px;
   border: 1px dashed rgba(138, 159, 196, 0.3);
@@ -868,6 +947,16 @@ body.sg-crm-panel-open #seven-gold-crm-toggle {
 .sg-app-btn--whatsapp:hover {
   background: rgba(76, 175, 80, 0.1);
   border-color: rgba(76, 175, 80, 0.6);
+}
+
+.sg-app-btn--cancel {
+  border-color: rgba(244, 67, 54, 0.4);
+  color: #f44336;
+}
+
+.sg-app-btn--cancel:hover {
+  background: rgba(244, 67, 54, 0.1);
+  border-color: rgba(244, 67, 54, 0.6);
 }
 
 .sg-app-link {

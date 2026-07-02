@@ -25,6 +25,8 @@
   const APPOINTMENT_TIME_FIELD = 'hora_agendamento';
   const CRM_WEB_URL = 'https://crmficapital.base44.app';
   let activeTab = 'capture';
+  let dashboardPeriod = 'day';
+  let dashboardSelectedDate = new Date().toISOString().slice(0, 10);
   let currentUserPermissions = null;
   let currentUserRole = "";
   let currentCrmUser = null;
@@ -1113,6 +1115,134 @@
   /*  UI helpers                                                         */
   /* ------------------------------------------------------------------ */
 
+  async function loadDashboardSummary() {
+    const statusEl = document.getElementById('sg-dashboard-status');
+    if (!statusEl) return;
+
+    statusEl.hidden = false;
+    statusEl.textContent = 'Atualizando indicadores...';
+
+    try {
+      const response = await chrome.runtime.sendMessage({ type: 'GET_DASHBOARD_DATA' });
+      if (!response?.ok) throw new Error(response?.error || 'Não foi possível carregar o dashboard.');
+
+      const leads = response.leads || [];
+      const leadIds = new Set(leads.map((lead) => String(lead.id)));
+      const tasks = (response.tasks || []).filter((task) => leadIds.has(String(task.lead_id)));
+      const appointments = (response.appointments || []).filter((appointment) => leadIds.has(String(appointment.lead_id)));
+      const selectedDate = new Date(dashboardSelectedDate + 'T12:00:00');
+      const now = selectedDate;
+      const periodStart = new Date(selectedDate);
+      const periodEnd = new Date(selectedDate);
+      if (dashboardPeriod === 'week') {
+        const day = (periodStart.getDay() + 6) % 7;
+        periodStart.setDate(periodStart.getDate() - day);
+        periodStart.setHours(0, 0, 0, 0);
+        periodEnd.setTime(periodStart.getTime());
+        periodEnd.setDate(periodEnd.getDate() + 7);
+      } else if (dashboardPeriod === 'month') {
+        periodStart.setDate(1);
+        periodStart.setHours(0, 0, 0, 0);
+        periodEnd.setTime(periodStart.getTime());
+        periodEnd.setMonth(periodEnd.getMonth() + 1);
+      } else {
+        periodStart.setHours(0, 0, 0, 0);
+        periodEnd.setTime(periodStart.getTime());
+        periodEnd.setDate(periodEnd.getDate() + 1);
+      }
+      const inPeriod = (value) => {
+        const date = new Date(value);
+        return !Number.isNaN(date.getTime()) && date >= periodStart && date < periodEnd;
+      };
+      const normalizeStage = (value) => String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+      const periodLeads = leads.filter((lead) => inPeriod(lead.created_at));
+      const periodTasks = tasks.filter((task) => inPeriod(task.scheduled_at));
+      const periodAppointments = appointments.filter((item) => inPeriod(`${item.data_agendamento}T${item.hora_agendamento || '00:00:00'}`));
+      const pendingTasks = periodTasks.filter((task) => ['pending', 'triggered'].includes(String(task.status || '').toLowerCase()));
+      const nextWeek = new Date(now.getTime() + (7 * 24 * 60 * 60 * 1000));
+      const people = new Set(
+        periodLeads.map((lead) => String(lead.assigned_to_email || lead.assigned_to_name || '').trim().toLowerCase()).filter(Boolean)
+      );
+
+      const totalLeads = periodLeads.length || 1;
+      const closedLeads = periodLeads.filter((lead) => ['venda_fechada', 'fechado', 'vendido'].includes(normalizeStage(lead.status))).length;
+      const pendingCount = pendingTasks.length;
+      const overdueCount = pendingTasks.filter((task) => new Date(task.scheduled_at).getTime() < now.getTime()).length;
+      const notAttended = periodLeads.filter((lead) => {
+        const s = normalizeStage(lead.status);
+        return s === 'lead_recebido' || s === 'nao_atendido' || s === 'sem_resposta';
+      }).length;
+      const inApproval = periodLeads.filter((lead) => {
+        const s = normalizeStage(lead.status);
+        return s === 'em_aprovacao' || s === 'aprovacao' || s === 'aguardando_aprovacao';
+      }).length;
+      const notWant = periodLeads.filter((lead) => {
+        const s = normalizeStage(lead.status);
+        return s === 'nao_quer' || s === 'rejeitado' || s === 'recusado';
+      }).length;
+      const trash = periodLeads.filter((lead) => {
+        const s = normalizeStage(lead.status);
+        return s === 'lixeira' || s === 'cancelado' || s === 'lixo';
+      }).length;
+      const storeClients = periodLeads.filter((lead) => {
+        const s = normalizeStage(lead.status);
+        return s === 'cliente_em_loja' || s === 'em_loja' || s === 'loja';
+      }).length;
+
+      const values = {
+        'sg-dash-leads': periodLeads.length,
+        'sg-dash-people': people.size || (periodLeads.length ? 1 : 0),
+        'sg-dash-new-leads': notAttended,
+        'sg-dash-appointments': periodAppointments.filter((item) => item.status !== 'cancelado').length,
+        'sg-dash-next-appointments': storeClients || appointments.filter((item) => {
+          const date = new Date(`${item.data_agendamento}T${item.hora_agendamento || '00:00:00'}`);
+          return item.status !== 'cancelado' && date >= now && date <= nextWeek;
+        }).length,
+        'sg-dash-tasks': inApproval || pendingCount,
+        'sg-dash-overdue': notWant || overdueCount,
+        'sg-dash-closed': closedLeads,
+        'sg-dash-trash': trash,
+      };
+
+      const pcts = {
+        'sg-dash-leads-pct': totalLeads > 0 ? Math.round((periodLeads.length / totalLeads) * 100) : 0,
+        'sg-dash-people-pct': totalLeads > 0 ? Math.round(((people.size || (periodLeads.length ? 1 : 0)) / totalLeads) * 100) : 0,
+        'sg-dash-new-leads-pct': totalLeads > 0 ? Math.round((notAttended / totalLeads) * 100) : 0,
+        'sg-dash-appointments-pct': totalLeads > 0 ? Math.round((periodAppointments.filter((item) => item.status !== 'cancelado').length / totalLeads) * 100) : 0,
+        'sg-dash-next-appointments-pct': totalLeads > 0 ? Math.round((storeClients / totalLeads) * 100) : 0,
+        'sg-dash-tasks-pct': totalLeads > 0 ? Math.round((inApproval / totalLeads) * 100) : 0,
+        'sg-dash-overdue-pct': totalLeads > 0 ? Math.round((notWant / totalLeads) * 100) : 0,
+        'sg-dash-closed-pct': totalLeads > 0 ? Math.round((closedLeads / totalLeads) * 100) : 0,
+        'sg-dash-trash-pct': totalLeads > 0 ? Math.round((trash / totalLeads) * 100) : 0,
+      };
+
+      Object.entries(values).forEach(([id, value]) => {
+        const element = document.getElementById(id);
+        if (element) element.textContent = String(value);
+      });
+      Object.entries(pcts).forEach(([id, value]) => {
+        const element = document.getElementById(id);
+        if (element) element.textContent = `${value}%`;
+      });
+
+      statusEl.hidden = true;
+    } catch (error) {
+      statusEl.hidden = false;
+      if (/extension context invalidated/i.test(String(error?.message || error))) {
+        statusEl.innerHTML = '<strong style="display:block;color:#ffcc66;margin-bottom:5px;">A extensão foi atualizada.</strong><span>Recarregue o WhatsApp Web para conectar novamente.</span>';
+        const reloadButton = document.createElement('button');
+        reloadButton.type = 'button';
+        reloadButton.className = 'sg-query-btn';
+        reloadButton.style.marginTop = '9px';
+        reloadButton.textContent = 'Recarregar WhatsApp';
+        reloadButton.addEventListener('click', () => window.location.reload());
+        statusEl.appendChild(reloadButton);
+      } else {
+        statusEl.textContent = `Erro ao carregar: ${error.message}`;
+      }
+    }
+  }
+
   function setActiveTab(tabName) {
     if (currentUserPermissions && !hasPermissionForTab(tabName)) {
       showPermissionError("Você não tem permissão para acessar esta função.");
@@ -1132,10 +1262,19 @@
 
     if (tabName === 'calendar') {
       initCalendarTab();
+    } else if (tabName === 'dashboard') {
+      loadDashboardSummary();
     } else if (tabName === 'tasks') {
-      loadTasksDesteLead();
+      setTimeout(async () => {
+        const details = document.getElementById('seven-gold-crm-lead-details');
+        if (details) details.dataset.leadId = '';
+        await captureAndQueryLead();
+        await loadTasksDesteLead();
+      }, 300);
     } else if (tabName === 'returns') {
       loadTodosOsRetornos();
+    } else if (tabName === 'capture') {
+      setTimeout(() => captureLead(), 300);
     } else if (tabName === 'view') {
       setTimeout(() => captureAndQueryLead(), 300);
     }
@@ -1147,6 +1286,10 @@
     nav.setAttribute('role', 'group');
     nav.setAttribute('aria-label', 'Acessos do Seven Gold CRM');
     nav.innerHTML = `
+      <button type="button" class="sg-side-tab" data-tab="dashboard" aria-pressed="false" title="Dashboard">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="4" rx="1"/><rect x="14" y="10" width="7" height="11" rx="1"/><rect x="3" y="13" width="7" height="8" rx="1"/></svg>
+        <span>Dashboard</span>
+      </button>
       <button type="button" class="sg-side-tab active" data-tab="capture" aria-pressed="true" title="Salvar lead">
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
         <span>Salvar lead</span>
@@ -1200,6 +1343,65 @@
       <div class="sg-header">
         <button class="sg-close" id="seven-gold-close" aria-label="Fechar painel">&times;</button>
       </div>
+
+      <section class="sg-tab-content" data-tab="dashboard" aria-label="Dashboard">
+        <div class="sg-scroll-body">
+          <div class="sg-tab-heading" style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;">
+            <div style="display:flex;align-items:center;gap:8px;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2.2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg><h2 style="margin:0;font-size:15px;color:#fff;">Resumo comercial</h2></div>
+            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
+              <div class="sg-dashboard-period" role="group" aria-label="Período do dashboard" style="display:flex;gap:2px;padding:2px;border:1px solid #1d2f5a;border-radius:6px;background:#081026;">
+                <button type="button" class="active" data-dashboard-period="day" style="padding:4px 6px;border:0;border-radius:4px;background:#d4af37;color:#081026;font-size:8.5px;font-weight:800;cursor:pointer;">Dia</button>
+                <button type="button" data-dashboard-period="week" style="padding:4px 6px;border:0;border-radius:4px;background:transparent;color:#8a9fc4;font-size:8.5px;font-weight:800;cursor:pointer;">Semana</button>
+                <button type="button" data-dashboard-period="month" style="padding:4px 6px;border:0;border-radius:4px;background:transparent;color:#8a9fc4;font-size:8.5px;font-weight:800;cursor:pointer;">Mês</button>
+              </div>
+              <input type="date" id="sg-dashboard-date" value="${dashboardSelectedDate}">
+            </div>
+          </div>
+
+          <div id="sg-dashboard-status" class="sg-info-box" style="margin-bottom: 12px;">Carregando indicadores...</div>
+
+          <div id="sg-dashboard-metrics" style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px;">
+            <div class="sg-dash-metric-card" style="--card-accent:#3b82f6;--card-icon-bg:rgba(59,130,246,0.15);">
+              <div class="sg-dash-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
+              <div class="sg-dash-row"><span class="sg-dash-value" id="sg-dash-leads">0</span><span class="sg-dash-pct" id="sg-dash-leads-pct">0%</span></div>
+            </div>
+            <div class="sg-dash-metric-card" style="--card-accent:#f97316;--card-icon-bg:rgba(249,115,22,0.15);">
+              <div class="sg-dash-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg></div>
+              <div class="sg-dash-row"><span class="sg-dash-value" id="sg-dash-people">0</span><span class="sg-dash-pct" id="sg-dash-people-pct">0%</span></div>
+            </div>
+            <div class="sg-dash-metric-card" style="--card-accent:#ef4444;--card-icon-bg:rgba(239,68,68,0.15);">
+              <div class="sg-dash-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="18" y1="8" x2="23" y2="13"/><line x1="23" y1="8" x2="18" y2="13"/></svg></div>
+              <div class="sg-dash-row"><span class="sg-dash-value" id="sg-dash-new-leads">0</span><span class="sg-dash-pct" id="sg-dash-new-leads-pct">0%</span></div>
+            </div>
+            <div class="sg-dash-metric-card" style="--card-accent:#3b82f6;--card-icon-bg:rgba(59,130,246,0.15);">
+              <div class="sg-dash-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></div>
+              <div class="sg-dash-row"><span class="sg-dash-value" id="sg-dash-appointments">0</span><span class="sg-dash-pct" id="sg-dash-appointments-pct">0%</span></div>
+            </div>
+            <div class="sg-dash-metric-card" style="--card-accent:#eab308;--card-icon-bg:rgba(234,179,8,0.15);">
+              <div class="sg-dash-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg></div>
+              <div class="sg-dash-row"><span class="sg-dash-value" id="sg-dash-next-appointments">0</span><span class="sg-dash-pct" id="sg-dash-next-appointments-pct">0%</span></div>
+            </div>
+            <div class="sg-dash-metric-card" style="--card-accent:#a855f7;--card-icon-bg:rgba(168,85,247,0.15);">
+              <div class="sg-dash-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/></svg></div>
+              <div class="sg-dash-row"><span class="sg-dash-value" id="sg-dash-tasks">0</span><span class="sg-dash-pct" id="sg-dash-tasks-pct">0%</span></div>
+            </div>
+            <div class="sg-dash-metric-card" style="--card-accent:#ef4444;--card-icon-bg:rgba(239,68,68,0.15);">
+              <div class="sg-dash-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg></div>
+              <div class="sg-dash-row"><span class="sg-dash-value" id="sg-dash-overdue">0</span><span class="sg-dash-pct" id="sg-dash-overdue-pct">0%</span></div>
+            </div>
+            <div class="sg-dash-metric-card" style="--card-accent:#22c55e;--card-icon-bg:rgba(34,197,94,0.15);">
+              <div class="sg-dash-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></div>
+              <div class="sg-dash-row"><span class="sg-dash-value" id="sg-dash-closed">0</span><span class="sg-dash-pct" id="sg-dash-closed-pct">0%</span></div>
+            </div>
+            <div class="sg-dash-metric-card" style="--card-accent:#ef4444;--card-icon-bg:rgba(239,68,68,0.15);">
+              <div class="sg-dash-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></div>
+              <div class="sg-dash-row"><span class="sg-dash-value" id="sg-dash-trash">0</span><span class="sg-dash-pct" id="sg-dash-trash-pct">0%</span></div>
+            </div>
+          </div>
+
+          <button type="button" id="sg-dashboard-refresh" class="sg-query-btn" style="margin-top:12px;">Atualizar dashboard</button>
+        </div>
+      </section>
 
       <section class="sg-tab-content active" data-tab="capture" aria-label="Capturar lead">
       <div class="sg-scroll-body">
@@ -1585,6 +1787,27 @@
       applyDockLayout(false);
     });
 
+    panel.querySelector('#sg-dashboard-refresh').addEventListener('click', loadDashboardSummary);
+    panel.querySelectorAll('[data-dashboard-period]').forEach((button) => {
+      button.addEventListener('click', () => {
+        dashboardPeriod = button.dataset.dashboardPeriod;
+        panel.querySelectorAll('[data-dashboard-period]').forEach((item) => {
+          const active = item === button;
+          item.classList.toggle('active', active);
+          item.style.background = active ? '#d4af37' : 'transparent';
+          item.style.color = active ? '#081026' : '#8a9fc4';
+        });
+        loadDashboardSummary();
+      });
+    });
+    const datePicker = panel.querySelector('#sg-dashboard-date');
+    if (datePicker) {
+      datePicker.addEventListener('change', () => {
+        dashboardSelectedDate = datePicker.value;
+        loadDashboardSummary();
+      });
+    }
+
     panel.querySelectorAll('.sg-help-toggle').forEach((button) => {
       button.addEventListener('click', (event) => {
         const btn = event.currentTarget;
@@ -1620,6 +1843,13 @@
       const willExpand = button.getAttribute('aria-expanded') !== 'true';
       button.setAttribute('aria-expanded', String(willExpand));
       card.hidden = !willExpand;
+      if (willExpand) {
+        const status = panel.querySelector('#seven-gold-return-status');
+        if (status) {
+          status.textContent = '';
+          status.className = 'sg-return-status';
+        }
+      }
     });
 
     panel.querySelector('#seven-gold-return-form').addEventListener('submit', handleReturnSubmit);
@@ -1707,12 +1937,6 @@
     const anotacao = form.observacao.value;
 
     const actor = await getCurrentActor();
-    const assigneeRow = document.getElementById('sg-crm-lead-assigned-row');
-    const assigneeNameText = document.getElementById('sg-crm-lead-assigned-name')?.textContent?.trim();
-    const assignedEmail = assigneeRow?.dataset.assignedEmail || actor?.email || null;
-    const assignedName = assigneeNameText && assigneeNameText !== 'Sem responsável' && assigneeNameText !== '-'
-      ? assigneeNameText
-      : (actor?.name || actor?.email || null);
 
     const payload = {
       lead_id: leadId,
@@ -1720,17 +1944,11 @@
       lead_telefone: leadPhone && leadPhone !== '-' ? leadPhone : null,
       type,
       scheduled_at: new Date(dataHora).toISOString(),
-      internal_note: anotacao || null,
-      assigned_to_email: assignedEmail,
-      assigned_to_name: assignedName
+      internal_note: anotacao || null
     };
 
     if (actor) {
       console.log("[Seven Gold CRM][Actor] Usuário da ação:", actor);
-      console.log("[Seven Gold CRM][Actor] Responsável da tarefa:", {
-        email: assignedEmail,
-        name: assignedName
-      });
     }
 
     if (type === 'whatsapp_message') {
@@ -1796,8 +2014,15 @@
       const btnTypeWa = document.getElementById('sg-task-type-wa');
       if (btnTypeWa) btnTypeWa.click();
 
-      loadTasksDesteLead();
-      loadTodosOsRetornos();
+      const createButton = document.getElementById('seven-gold-create-return-btn');
+      const formCard = document.getElementById('seven-gold-return-form-card');
+      if (createButton) createButton.setAttribute('aria-expanded', 'false');
+      if (formCard) formCard.hidden = true;
+
+      await Promise.all([loadTasksDesteLead(), loadTodosOsRetornos()]);
+      document.getElementById('sg-tasks-list-container')
+        ?.closest('.sg-return-card')
+        ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     } catch (err) {
       console.error('[Seven Gold CRM][Tarefas] Erro:', err);
       status.textContent = 'Falha ao salvar tarefa: ' + err.message;
@@ -1834,6 +2059,33 @@
     });
   }
 
+  function detachTaskCards(taskId) {
+    const cards = new Set();
+    document.querySelectorAll(`[data-id="${taskId}"]`).forEach((element) => {
+      const card = element.closest('.sg-return-card');
+      if (card) cards.add(card);
+    });
+    const detachedCards = Array.from(cards).map((card) => ({
+      card,
+      parent: card.parentNode,
+      nextSibling: card.nextSibling,
+    }));
+    detachedCards.forEach(({ card }) => card.remove());
+    return detachedCards;
+  }
+
+  function restoreTaskCards(detachedCards) {
+    (detachedCards || []).forEach(({ card, parent, nextSibling }) => {
+      if (!parent?.isConnected) return;
+      if (nextSibling?.parentNode === parent) parent.insertBefore(card, nextSibling);
+      else parent.appendChild(card);
+    });
+  }
+
+  function removeTaskCards(taskId) {
+    detachTaskCards(taskId);
+  }
+
   async function completeTask(taskId) {
     if (!canUseTasksTab()) {
       showPermissionError("Você não tem permissão para atualizar tarefas.");
@@ -1841,6 +2093,7 @@
     }
     const doneBtn = document.querySelector(`.sg-app-btn--done[data-id="${taskId}"]`);
     const cancelBtn = document.querySelector(`.sg-app-btn--cancel[data-id="${taskId}"]`);
+    const detachedCards = detachTaskCards(taskId);
     
     if (doneBtn) doneBtn.disabled = true;
     if (cancelBtn) cancelBtn.disabled = true;
@@ -1848,12 +2101,7 @@
     const actor = await getCurrentActor();
     const donePayload = { status: 'done' };
     if (actor) {
-      donePayload.completed_by_email = actor.email;
-      donePayload.completed_by_name = actor.name;
-      donePayload.completed_at = new Date().toISOString();
-
       console.log("[Seven Gold CRM][Actor] Usuário da ação:", actor);
-      console.log("[Seven Gold CRM][Actor] Payload com usuário:", donePayload);
     }
 
     try {
@@ -1867,37 +2115,21 @@
       if (error) throw new Error(error.message || 'Erro ao atualizar tarefa');
 
       showStatus('Tarefa concluída com sucesso!', 'success');
-
       if (updatedTask?.lead_id) {
         await createLeadActivityLog({
           leadId: updatedTask.lead_id,
           actionType: "task_completed",
           actionLabel: "Tarefa concluída",
           description: `Tarefa concluída: ${updatedTask.title || updatedTask.type || "sem título"}.`,
-          oldValue: updatedTask.status || "pending",
+          oldValue: "pending",
           newValue: "done",
         });
         await loadLeadHistory(updatedTask.lead_id);
       }
 
-      const card = doneBtn ? doneBtn.closest('.sg-return-card') : null;
-      if (card) {
-        card.style.opacity = '0.7';
-        card.style.borderColor = 'rgba(76, 175, 80, 0.5)';
-        card.innerHTML = `
-          <div style="display: flex; align-items: center; justify-content: center; gap: 8px; padding: 8px; color: #4caf50; font-weight: bold;">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-            Tarefa Feita!
-          </div>
-        `;
-      }
-
-      setTimeout(() => {
-        loadTasksDesteLead();
-        loadTodosOsRetornos();
-      }, 1000);
     } catch (e) {
       console.error('[Seven Gold CRM][Tarefas] Falha ao marcar feito:', e);
+      restoreTaskCards(detachedCards);
       showStatus('Falha ao concluir tarefa: ' + e.message, 'error');
       if (doneBtn) doneBtn.disabled = false;
       if (cancelBtn) cancelBtn.disabled = false;
@@ -1911,6 +2143,7 @@
     }
     const doneBtn = document.querySelector(`.sg-app-btn--done[data-id="${taskId}"]`);
     const cancelBtn = document.querySelector(`.sg-app-btn--cancel[data-id="${taskId}"]`);
+    const detachedCards = detachTaskCards(taskId);
     
     if (doneBtn) doneBtn.disabled = true;
     if (cancelBtn) cancelBtn.disabled = true;
@@ -1918,11 +2151,7 @@
     const actor = await getCurrentActor();
     const cancelPayload = { status: 'cancelled' };
     if (actor) {
-      cancelPayload.completed_by_email = actor.email;
-      cancelPayload.completed_by_name = actor.name;
-
       console.log("[Seven Gold CRM][Actor] Usuário da ação:", actor);
-      console.log("[Seven Gold CRM][Actor] Payload com usuário:", cancelPayload);
     }
 
     try {
@@ -1936,37 +2165,21 @@
       if (error) throw new Error(error.message || 'Erro ao atualizar tarefa');
 
       showStatus('Tarefa cancelada com sucesso!', 'success');
-
       if (updatedTask?.lead_id) {
         await createLeadActivityLog({
           leadId: updatedTask.lead_id,
           actionType: "task_cancelled",
           actionLabel: "Tarefa cancelada",
           description: `Tarefa cancelada: ${updatedTask.title || updatedTask.type || "sem título"}.`,
-          oldValue: updatedTask.status || "pending",
+          oldValue: "pending",
           newValue: "cancelled",
         });
         await loadLeadHistory(updatedTask.lead_id);
       }
 
-      const card = cancelBtn ? cancelBtn.closest('.sg-return-card') : null;
-      if (card) {
-        card.style.opacity = '0.7';
-        card.style.borderColor = 'rgba(244, 67, 54, 0.5)';
-        card.innerHTML = `
-          <div style="display: flex; align-items: center; justify-content: center; gap: 8px; padding: 8px; color: #f44336; font-weight: bold;">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-            Tarefa Cancelada!
-          </div>
-        `;
-      }
-
-      setTimeout(() => {
-        loadTasksDesteLead();
-        loadTodosOsRetornos();
-      }, 1000);
     } catch (e) {
       console.error('[Seven Gold CRM][Tarefas] Falha ao cancelar:', e);
+      restoreTaskCards(detachedCards);
       showStatus('Falha ao cancelar tarefa: ' + e.message, 'error');
       if (doneBtn) doneBtn.disabled = false;
       if (cancelBtn) cancelBtn.disabled = false;
@@ -3559,6 +3772,9 @@
   }
 
   function hasPermissionForTab(tabName) {
+    if (tabName === 'dashboard') {
+      return canUseExtensionArea('crm_pipeline');
+    }
     if (tabName === 'capture' || tabName === 'view') {
       return canUseExtensionArea('crm_pipeline');
     }
@@ -3572,18 +3788,21 @@
   }
 
   function applyTabPermissions() {
+    const hasDashboard = canUseExtensionArea('crm_pipeline');
     const hasCapture = canUseExtensionArea('crm_pipeline');
     const hasView = canUseExtensionArea('crm_pipeline');
     const hasTasks = canUseTasksTab();
     const hasCalendar = canUseExtensionArea('calendario');
 
     // Hide or show side buttons
+    const btnDashboard = document.querySelector(`.sg-side-tab[data-tab="dashboard"]`);
     const btnCapture = document.querySelector(`.sg-side-tab[data-tab="capture"]`);
     const btnView = document.querySelector(`.sg-side-tab[data-tab="view"]`);
     const btnTasks = document.querySelector(`.sg-side-tab[data-tab="tasks"]`);
     const btnReturns = document.querySelector(`.sg-side-tab[data-tab="returns"]`);
     const btnCalendar = document.querySelector(`.sg-side-tab[data-tab="calendar"]`);
 
+    if (btnDashboard) btnDashboard.style.display = hasDashboard ? '' : 'none';
     if (btnCapture) btnCapture.style.display = hasCapture ? '' : 'none';
     if (btnView) btnView.style.display = hasView ? '' : 'none';
     if (btnTasks) btnTasks.style.display = hasTasks ? '' : 'none';
@@ -3591,7 +3810,7 @@
     if (btnCalendar) btnCalendar.style.display = hasCalendar ? '' : 'none';
 
     // Check if at least one tab is allowed
-    const hasAnyTab = hasCapture || hasView || hasTasks || hasCalendar;
+    const hasAnyTab = hasDashboard || hasCapture || hasView || hasTasks || hasCalendar;
     if (!hasAnyTab) {
       const panel = document.getElementById(PANEL_ID);
       const cargoDebug = currentUserRole ? ` (cargo: "${currentUserRole}")` : '';
@@ -3629,7 +3848,9 @@
 
     // Set active tab to the first allowed tab if the current active tab is not allowed
     if (!hasPermissionForTab(activeTab)) {
-      if (hasCapture) {
+      if (hasDashboard) {
+        setActiveTab('dashboard');
+      } else if (hasCapture) {
         setActiveTab('capture');
       } else if (hasView) {
         setActiveTab('view');
@@ -3977,10 +4198,10 @@
             <div style="color: #8a9fc4; margin-bottom: 2px;">Vendedor: ${appt.vendedor}</div>
             ${appt.telefone ? `<div style="color: #8a9fc4; margin-bottom: 6px;">Telefone: ${appt.telefone}</div>` : ''}
             ${notesHtml}
-            <div class="sg-appointment-actions" style="margin-top: 8px; display: flex; gap: 6px;">
+            <div class="sg-appointment-actions" style="margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap;">
               ${appt.telefone ? `<button type="button" class="sg-app-btn sg-app-btn--whatsapp" data-phone="${appt.telefone}">WhatsApp</button>` : ''}
               <button type="button" class="sg-app-btn sg-app-btn--view-lead" data-phone="${appt.telefone || ''}">Ver lead</button>
-              <a href="${CRM_WEB_URL}" target="_blank" class="sg-app-link">Abrir no CRM</a>
+              <button type="button" class="sg-app-btn sg-app-btn--cancel" data-appointment-id="${appt.id || ''}" data-lead-id="${appt.leadId || ''}" data-phone="${appt.telefone || ''}">Cancelar agendamento</button>
             </div>
           `;
 
@@ -4011,6 +4232,64 @@
                 handleCrmQuery();
               } else {
                 showStatus('Este agendamento não possui telefone cadastrado.', 'warning');
+              }
+            });
+          }
+
+          // Cancelar Agendamento Button Listener
+          const cancelBtn = card.querySelector('.sg-app-btn--cancel');
+          if (cancelBtn) {
+            cancelBtn.addEventListener('click', async () => {
+              const appointmentId = cancelBtn.dataset.appointmentId;
+              const leadId = cancelBtn.dataset.leadId;
+              const phone = cancelBtn.dataset.phone;
+
+              if (!confirm('Deseja cancelar este agendamento e voltar o lead para Primeiro Contato?')) return;
+
+              cancelBtn.disabled = true;
+              cancelBtn.textContent = 'Cancelando...';
+
+              try {
+                // Update appointment status to cancelado
+                if (appointmentId) {
+                  await chrome.runtime.sendMessage({
+                    type: 'UPDATE_APPOINTMENT',
+                    id: appointmentId,
+                    data: { status: 'cancelado' }
+                  });
+                }
+
+                // Update lead stage to primeiro_contato
+                if (phone) {
+                  const actor = await getCurrentActor();
+                  const cleanPhone = normalizeCrmPhone(phone);
+                  await chrome.runtime.sendMessage({
+                    type: 'UPDATE_LEAD_STAGE',
+                    phone: cleanPhone,
+                    status: 'primeiro_contato',
+                    updated_by_email: actor?.email || '',
+                    updated_by_name: actor?.name || '',
+                    updated_at: new Date().toISOString(),
+                  });
+                }
+
+                // Remove card from UI
+                card.style.opacity = '0.5';
+                card.style.pointerEvents = 'none';
+                cancelBtn.textContent = 'Cancelado';
+                cancelBtn.style.background = '#f44336';
+                cancelBtn.style.color = '#fff';
+
+                // Reload calendar after short delay
+                setTimeout(() => {
+                  loadCalendarAppointments(currentCalendarBaseDate);
+                }, 1500);
+
+              } catch (err) {
+                console.error('[Seven Gold CRM] Erro ao cancelar agendamento:', err);
+                cancelBtn.disabled = false;
+                cancelBtn.textContent = 'Cancelar agendamento';
+                alert('Erro ao cancelar agendamento: ' + err.message);
               }
             });
           }
