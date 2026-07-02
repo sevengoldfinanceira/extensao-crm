@@ -17,7 +17,7 @@
   const CAPTURE_BTN_ID = 'seven-gold-capture-btn';
   const CONTACT_BTN_ID = 'seven-gold-contact-btn';
   const LEAD_BTN_ID = 'seven-gold-lead-btn';
-  const PANEL_WIDTH = 340;
+  const PANEL_WIDTH = 480;
   const MIN_DOCK_WIDTH = 1200;
   const DEBUG = false;
   const APPOINTMENTS_TABLE = 'appointments';
@@ -1127,9 +1127,8 @@
       if (!response?.ok) throw new Error(response?.error || 'Não foi possível carregar o dashboard.');
 
       const leads = response.leads || [];
-      const leadIds = new Set(leads.map((lead) => String(lead.id)));
-      const tasks = (response.tasks || []).filter((task) => leadIds.has(String(task.lead_id)));
-      const appointments = (response.appointments || []).filter((appointment) => leadIds.has(String(appointment.lead_id)));
+      const stageEvents = response.stageEvents || [];
+      const appointments = response.appointments || [];
       const selectedDate = new Date(dashboardSelectedDate + 'T12:00:00');
       const now = selectedDate;
       const periodStart = new Date(selectedDate);
@@ -1150,70 +1149,88 @@
         periodEnd.setTime(periodStart.getTime());
         periodEnd.setDate(periodEnd.getDate() + 1);
       }
-      const inPeriod = (value) => {
-        const date = new Date(value);
+      const inPeriod = (value, dateOnly = false) => {
+        if (!value) return false;
+        const date = dateOnly ? new Date(`${value}T12:00:00`) : new Date(value);
         return !Number.isNaN(date.getTime()) && date >= periodStart && date < periodEnd;
       };
       const normalizeStage = (value) => String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
       const periodLeads = leads.filter((lead) => inPeriod(lead.created_at));
-      const periodTasks = tasks.filter((task) => inPeriod(task.scheduled_at));
-      const periodAppointments = appointments.filter((item) => inPeriod(`${item.data_agendamento}T${item.hora_agendamento || '00:00:00'}`));
-      const pendingTasks = periodTasks.filter((task) => ['pending', 'triggered'].includes(String(task.status || '').toLowerCase()));
-      const nextWeek = new Date(now.getTime() + (7 * 24 * 60 * 60 * 1000));
-      const people = new Set(
-        periodLeads.map((lead) => String(lead.assigned_to_email || lead.assigned_to_name || '').trim().toLowerCase()).filter(Boolean)
+      const visibleLeadIds = new Set(leads.map((lead) => String(lead.id)));
+      const periodEvents = stageEvents.filter((event) =>
+        visibleLeadIds.has(String(event.lead_id)) && inPeriod(event.created_at)
       );
+      const periodAppointments = appointments.filter((appointment) =>
+        visibleLeadIds.has(String(appointment.lead_id)) &&
+        inPeriod(appointment.data_agendamento || appointment.created_at, Boolean(appointment.data_agendamento))
+      );
+      const serviceLeadIds = new Set();
+      const storeLeadIds = new Set();
+      const approvalLeadIds = new Set();
+      const closedLeadIds = new Set();
+      const cancelledLeadIds = new Set();
+      const historicalLeadIds = new Set(stageEvents.map((event) => String(event.lead_id)));
+      const pipelineOrder = ['lead_recebido', 'primeiro_contato', 'agendamento', 'cliente_em_loja', 'em_aprovacao', 'proposta_enviada', 'venda_fechada'];
 
-      const totalLeads = periodLeads.length || 1;
-      const closedLeads = periodLeads.filter((lead) => ['venda_fechada', 'fechado', 'vendido'].includes(normalizeStage(lead.status))).length;
-      const pendingCount = pendingTasks.length;
-      const overdueCount = pendingTasks.filter((task) => new Date(task.scheduled_at).getTime() < now.getTime()).length;
-      const notAttended = periodLeads.filter((lead) => {
-        const s = normalizeStage(lead.status);
-        return s === 'lead_recebido' || s === 'nao_atendido' || s === 'sem_resposta';
-      }).length;
-      const inApproval = periodLeads.filter((lead) => {
-        const s = normalizeStage(lead.status);
-        return s === 'em_aprovacao' || s === 'aprovacao' || s === 'aguardando_aprovacao';
-      }).length;
-      const notWant = periodLeads.filter((lead) => {
-        const s = normalizeStage(lead.status);
-        return s === 'nao_quer' || s === 'rejeitado' || s === 'recusado';
-      }).length;
-      const trash = periodLeads.filter((lead) => {
-        const s = normalizeStage(lead.status);
-        return s === 'lixeira' || s === 'cancelado' || s === 'lixo';
-      }).length;
-      const storeClients = periodLeads.filter((lead) => {
-        const s = normalizeStage(lead.status);
-        return s === 'cliente_em_loja' || s === 'em_loja' || s === 'loja';
-      }).length;
+      periodEvents.forEach((event) => {
+        const leadId = String(event.lead_id);
+        const status = normalizeStage(event.new_value);
+        const previousStatus = normalizeStage(event.old_value);
+        if (status === 'primeiro_contato' || previousStatus === 'primeiro_contato') serviceLeadIds.add(leadId);
+        if (status === 'cliente_em_loja') storeLeadIds.add(leadId);
+        if (['em_aprovacao', 'proposta_enviada'].includes(status)) approvalLeadIds.add(leadId);
+        if (status === 'venda_fechada') closedLeadIds.add(leadId);
+        if (status === 'cancelado') cancelledLeadIds.add(leadId);
+      });
+
+      leads.forEach((lead) => {
+        const leadId = String(lead.id);
+        if (historicalLeadIds.has(leadId)) return;
+        const movementDate = lead.updated_at || lead.ultima_interacao || lead.created_at;
+        if (!inPeriod(movementDate)) return;
+        const status = normalizeStage(lead.status);
+        if (pipelineOrder.indexOf(status) >= pipelineOrder.indexOf('primeiro_contato')) serviceLeadIds.add(leadId);
+        if (['cliente_em_loja', 'em_aprovacao', 'proposta_enviada', 'venda_fechada', 'nao_quer', 'não_quer', 'nao_tem_interesse', 'perdido'].includes(status)) storeLeadIds.add(leadId);
+        if (['em_aprovacao', 'proposta_enviada'].includes(status)) approvalLeadIds.add(leadId);
+        if (status === 'venda_fechada') closedLeadIds.add(leadId);
+        if (status === 'cancelado') cancelledLeadIds.add(leadId);
+      });
+
+      const scheduledLeadKeys = new Set(periodAppointments
+        .map((appointment) => String(appointment.lead_id || appointment.id))
+        .filter(Boolean));
+      const receivedLeads = periodLeads.length;
+      const inService = serviceLeadIds.size;
+      const notAttended = Math.max(receivedLeads - inService, 0);
+      const totalAppointments = scheduledLeadKeys.size;
+      const storeClients = storeLeadIds.size;
+      const inApproval = approvalLeadIds.size;
+      const closedLeads = closedLeadIds.size;
+      const trash = cancelledLeadIds.size;
+      const notWant = leads.filter((lead) => normalizeStage(lead.status) === 'cliente_em_loja').length;
+      const percent = (value, total) => total > 0 ? Number(((value / total) * 100).toFixed(1)) : 0;
 
       const values = {
-        'sg-dash-leads': periodLeads.length,
-        'sg-dash-people': people.size || (periodLeads.length ? 1 : 0),
+        'sg-dash-leads': receivedLeads,
+        'sg-dash-people': inService,
         'sg-dash-new-leads': notAttended,
-        'sg-dash-appointments': periodAppointments.filter((item) => item.status !== 'cancelado').length,
-        'sg-dash-next-appointments': storeClients || appointments.filter((item) => {
-          const date = new Date(`${item.data_agendamento}T${item.hora_agendamento || '00:00:00'}`);
-          return item.status !== 'cancelado' && date >= now && date <= nextWeek;
-        }).length,
-        'sg-dash-tasks': inApproval || pendingCount,
-        'sg-dash-overdue': notWant || overdueCount,
+        'sg-dash-appointments': totalAppointments,
+        'sg-dash-next-appointments': storeClients,
+        'sg-dash-tasks': inApproval,
+        'sg-dash-overdue': notWant,
         'sg-dash-closed': closedLeads,
         'sg-dash-trash': trash,
       };
 
       const pcts = {
-        'sg-dash-leads-pct': totalLeads > 0 ? Math.round((periodLeads.length / totalLeads) * 100) : 0,
-        'sg-dash-people-pct': totalLeads > 0 ? Math.round(((people.size || (periodLeads.length ? 1 : 0)) / totalLeads) * 100) : 0,
-        'sg-dash-new-leads-pct': totalLeads > 0 ? Math.round((notAttended / totalLeads) * 100) : 0,
-        'sg-dash-appointments-pct': totalLeads > 0 ? Math.round((periodAppointments.filter((item) => item.status !== 'cancelado').length / totalLeads) * 100) : 0,
-        'sg-dash-next-appointments-pct': totalLeads > 0 ? Math.round((storeClients / totalLeads) * 100) : 0,
-        'sg-dash-tasks-pct': totalLeads > 0 ? Math.round((inApproval / totalLeads) * 100) : 0,
-        'sg-dash-overdue-pct': totalLeads > 0 ? Math.round((notWant / totalLeads) * 100) : 0,
-        'sg-dash-closed-pct': totalLeads > 0 ? Math.round((closedLeads / totalLeads) * 100) : 0,
-        'sg-dash-trash-pct': totalLeads > 0 ? Math.round((trash / totalLeads) * 100) : 0,
+        'sg-dash-people-pct': percent(inService, receivedLeads),
+        'sg-dash-new-leads-pct': percent(notAttended, receivedLeads),
+        'sg-dash-appointments-pct': percent(totalAppointments, inService),
+        'sg-dash-next-appointments-pct': percent(storeClients, totalAppointments),
+        'sg-dash-tasks-pct': percent(inApproval, storeClients),
+        'sg-dash-overdue-pct': percent(notWant, storeClients),
+        'sg-dash-closed-pct': percent(closedLeads, storeClients),
+        'sg-dash-trash-pct': percent(trash, receivedLeads),
       };
 
       Object.entries(values).forEach(([id, value]) => {
@@ -1237,6 +1254,19 @@
         reloadButton.textContent = 'Recarregar WhatsApp';
         reloadButton.addEventListener('click', () => window.location.reload());
         statusEl.appendChild(reloadButton);
+      } else if (/sess[aã]o inv[aá]lida/i.test(String(error?.message || error))) {
+        statusEl.innerHTML = '<strong style="display:block;color:#ffcc66;margin-bottom:5px;">Sessão inválida.</strong><span>Saia da extensão e entre novamente com sua conta do Google.</span>';
+        const logoutButton = document.createElement('button');
+        logoutButton.type = 'button';
+        logoutButton.className = 'sg-query-btn';
+        logoutButton.style.marginTop = '9px';
+        logoutButton.textContent = 'Sair e entrar com Google';
+        logoutButton.addEventListener('click', () => {
+          chrome.storage.local.remove(['sevenGoldAuthSession', 'sevenGoldCrmUser'], () => {
+            window.location.reload();
+          });
+        });
+        statusEl.appendChild(logoutButton);
       } else {
         statusEl.textContent = `Erro ao carregar: ${error.message}`;
       }
@@ -1347,12 +1377,12 @@
       <section class="sg-tab-content" data-tab="dashboard" aria-label="Dashboard">
         <div class="sg-scroll-body">
           <div class="sg-tab-heading" style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;">
-            <div style="display:flex;align-items:center;gap:8px;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2.2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg><h2 style="margin:0;font-size:15px;color:#fff;">Resumo comercial</h2></div>
-            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
-              <div class="sg-dashboard-period" role="group" aria-label="Período do dashboard" style="display:flex;gap:2px;padding:2px;border:1px solid #1d2f5a;border-radius:6px;background:#081026;">
-                <button type="button" class="active" data-dashboard-period="day" style="padding:4px 6px;border:0;border-radius:4px;background:#d4af37;color:#081026;font-size:8.5px;font-weight:800;cursor:pointer;">Dia</button>
-                <button type="button" data-dashboard-period="week" style="padding:4px 6px;border:0;border-radius:4px;background:transparent;color:#8a9fc4;font-size:8.5px;font-weight:800;cursor:pointer;">Semana</button>
-                <button type="button" data-dashboard-period="month" style="padding:4px 6px;border:0;border-radius:4px;background:transparent;color:#8a9fc4;font-size:8.5px;font-weight:800;cursor:pointer;">Mês</button>
+            <div style="display:flex;align-items:center;gap:10px;"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2.2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg><h2 style="margin:0;font-size:17px;color:#fff;">Resumo comercial</h2></div>
+            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px;">
+              <div class="sg-dashboard-period" role="group" aria-label="Período do dashboard" style="display:flex;gap:3px;padding:3px;border:1px solid #1d2f5a;border-radius:7px;background:#081026;">
+                <button type="button" class="active" data-dashboard-period="day" style="padding:5px 9px;border:0;border-radius:5px;background:#d4af37;color:#081026;font-size:10px;font-weight:800;cursor:pointer;">Dia</button>
+                <button type="button" data-dashboard-period="week" style="padding:5px 9px;border:0;border-radius:5px;background:transparent;color:#8a9fc4;font-size:10px;font-weight:800;cursor:pointer;">Semana</button>
+                <button type="button" data-dashboard-period="month" style="padding:5px 9px;border:0;border-radius:5px;background:transparent;color:#8a9fc4;font-size:10px;font-weight:800;cursor:pointer;">Mês</button>
               </div>
               <input type="date" id="sg-dashboard-date" value="${dashboardSelectedDate}">
             </div>
@@ -1363,38 +1393,47 @@
           <div id="sg-dashboard-metrics" style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px;">
             <div class="sg-dash-metric-card" style="--card-accent:#3b82f6;--card-icon-bg:rgba(59,130,246,0.15);">
               <div class="sg-dash-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
-              <div class="sg-dash-row"><span class="sg-dash-value" id="sg-dash-leads">0</span><span class="sg-dash-pct" id="sg-dash-leads-pct">0%</span></div>
+              <div class="sg-dash-title">Leads recebidos</div>
+              <div class="sg-dash-row"><span class="sg-dash-value" id="sg-dash-leads">0</span></div>
             </div>
             <div class="sg-dash-metric-card" style="--card-accent:#f97316;--card-icon-bg:rgba(249,115,22,0.15);">
               <div class="sg-dash-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg></div>
+              <div class="sg-dash-title">Clientes atendidos</div>
               <div class="sg-dash-row"><span class="sg-dash-value" id="sg-dash-people">0</span><span class="sg-dash-pct" id="sg-dash-people-pct">0%</span></div>
             </div>
             <div class="sg-dash-metric-card" style="--card-accent:#ef4444;--card-icon-bg:rgba(239,68,68,0.15);">
               <div class="sg-dash-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="18" y1="8" x2="23" y2="13"/><line x1="23" y1="8" x2="18" y2="13"/></svg></div>
+              <div class="sg-dash-title">Não atendidos</div>
               <div class="sg-dash-row"><span class="sg-dash-value" id="sg-dash-new-leads">0</span><span class="sg-dash-pct" id="sg-dash-new-leads-pct">0%</span></div>
             </div>
             <div class="sg-dash-metric-card" style="--card-accent:#3b82f6;--card-icon-bg:rgba(59,130,246,0.15);">
               <div class="sg-dash-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></div>
+              <div class="sg-dash-title">Agendamentos</div>
               <div class="sg-dash-row"><span class="sg-dash-value" id="sg-dash-appointments">0</span><span class="sg-dash-pct" id="sg-dash-appointments-pct">0%</span></div>
             </div>
             <div class="sg-dash-metric-card" style="--card-accent:#eab308;--card-icon-bg:rgba(234,179,8,0.15);">
               <div class="sg-dash-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg></div>
+              <div class="sg-dash-title">Clientes em loja</div>
               <div class="sg-dash-row"><span class="sg-dash-value" id="sg-dash-next-appointments">0</span><span class="sg-dash-pct" id="sg-dash-next-appointments-pct">0%</span></div>
             </div>
             <div class="sg-dash-metric-card" style="--card-accent:#a855f7;--card-icon-bg:rgba(168,85,247,0.15);">
               <div class="sg-dash-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/></svg></div>
+              <div class="sg-dash-title">Em aprovação</div>
               <div class="sg-dash-row"><span class="sg-dash-value" id="sg-dash-tasks">0</span><span class="sg-dash-pct" id="sg-dash-tasks-pct">0%</span></div>
             </div>
             <div class="sg-dash-metric-card" style="--card-accent:#ef4444;--card-icon-bg:rgba(239,68,68,0.15);">
               <div class="sg-dash-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg></div>
+              <div class="sg-dash-title">Não quer</div>
               <div class="sg-dash-row"><span class="sg-dash-value" id="sg-dash-overdue">0</span><span class="sg-dash-pct" id="sg-dash-overdue-pct">0%</span></div>
             </div>
             <div class="sg-dash-metric-card" style="--card-accent:#22c55e;--card-icon-bg:rgba(34,197,94,0.15);">
               <div class="sg-dash-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></div>
+              <div class="sg-dash-title">Venda fechada</div>
               <div class="sg-dash-row"><span class="sg-dash-value" id="sg-dash-closed">0</span><span class="sg-dash-pct" id="sg-dash-closed-pct">0%</span></div>
             </div>
             <div class="sg-dash-metric-card" style="--card-accent:#ef4444;--card-icon-bg:rgba(239,68,68,0.15);">
               <div class="sg-dash-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></div>
+              <div class="sg-dash-title">Cancelados</div>
               <div class="sg-dash-row"><span class="sg-dash-value" id="sg-dash-trash">0</span><span class="sg-dash-pct" id="sg-dash-trash-pct">0%</span></div>
             </div>
           </div>
@@ -1517,7 +1556,8 @@
           </button>
 
           <div id="seven-gold-crm-lead-details" style="display: none; font-size: 12px; line-height: 1.6; color: #ccc;">
-            <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #1d2f5a; display: flex; flex-direction: column; gap: 8px;">
+            <div class="sg-lead-details-grid" style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #1d2f5a;">
+              <div class="sg-lead-info-column">
               <div style="display: flex; align-items: center; gap: 8px;">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#d4af37" stroke-width="2" style="flex-shrink: 0;"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
                 <span style="color: #8a9fc4; width: 60px; flex-shrink: 0;">Nome:</span>
@@ -1543,8 +1583,9 @@
                 <span style="color: #8a9fc4; width: 60px; flex-shrink: 0;">Interação:</span>
                 <span id="sg-crm-lead-interaction" style="font-weight: 600; color: #fff; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">-</span>
               </div>
+              </div>
 
-              <div id="sg-crm-lead-assigned-row" style="display: none; flex-direction: column; gap: 4px; padding: 8px 10px; background: rgba(29, 47, 90, 0.2); border: 1px solid #1d2f5a; border-radius: 6px; margin-top: 4px;">
+              <div id="sg-crm-lead-assigned-row" class="sg-lead-assignee-card" style="display: none; flex-direction: column; gap: 4px; padding: 8px 10px; background: rgba(29, 47, 90, 0.2); border: 1px solid #1d2f5a; border-radius: 6px;">
                 <div style="display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 11px; color: #d4af37; font-weight: 600;">
                   <span style="display: flex; align-items: center; gap: 6px;">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink: 0;"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
@@ -1584,6 +1625,7 @@
                 <span>Selecione a próxima etapa para mover este lead no CRM.</span>
               </div>
 
+              <div class="sg-lead-secondary-grid">
               <div class="sg-additional-card">
                 <div class="sg-additional-card-title">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
@@ -1609,6 +1651,7 @@
                 <div id="sg-crm-lead-history-container">
                   <div class="sg-empty-state" style="font-size: 10px; padding: 8px;">Nenhuma atividade registrada.</div>
                 </div>
+              </div>
               </div>
             </div>
           </div>
@@ -1689,7 +1732,7 @@
         </div>
 
         <div class="sg-return-card">
-          <div class="sg-card-title">Tarefas deste lead</div>
+          <div class="sg-card-title" style="text-align:center;justify-content:center;">Tarefas deste lead</div>
           <div id="sg-tasks-list-container" style="display: flex; flex-direction: column; gap: 8px;">
             <div class="sg-empty-state">Nenhuma tarefa cadastrada.</div>
           </div>
@@ -1719,7 +1762,7 @@
 
         <div class="sg-return-card">
           <div class="sg-card-title">Retornos de hoje</div>
-          <div id="sg-returns-today-container" style="display: flex; flex-direction: column; gap: 8px;">
+          <div id="sg-returns-today-container" class="sg-returns-grid">
             <div class="sg-empty-state">Nenhum retorno para hoje.</div>
           </div>
         </div>
@@ -1729,7 +1772,7 @@
             Todos os retornos
             <svg id="sg-returns-all-arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="margin-left: 6px; transition: transform 0.2s; vertical-align: middle;"><polyline points="6 9 12 15 18 9"/></svg>
           </div>
-          <div id="sg-returns-all-container" style="display: none; flex-direction: column; gap: 8px;">
+          <div id="sg-returns-all-container" class="sg-returns-grid" style="display: none;">
             <div class="sg-empty-state">Nenhum retorno cadastrado.</div>
           </div>
         </div>
@@ -1756,12 +1799,8 @@
         </div>
 
 
-        <div style="padding: 0 16px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+        <div style="padding: 0 16px; margin-bottom: 8px; display: flex; justify-content: center; align-items: center;">
           <span id="sg-calendar-week-label" style="font-size: 12px; font-weight: 700; color: #d4af37;">Semana: --/-- a --/--</span>
-          <a href="${CRM_WEB_URL}/calendar" target="_blank" class="sg-btn-link" style="font-size: 11px;">
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="margin-right: 4px;"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-            Calendário completo
-          </a>
         </div>
 
         <div class="sg-calendar-nav" style="border-top: 1px solid #1d2f5a; margin-bottom: 12px; padding: 10px 12px; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 6px; width: 100%; background: #081026;">
@@ -2224,7 +2263,21 @@
         return;
       }
 
-      container.innerHTML = '';
+      container.innerHTML = `
+        <section class="sg-return-type-column sg-return-type-column--whatsapp">
+          <div class="sg-return-type-title">Mensagem WhatsApp</div>
+          <div class="sg-return-type-list" data-task-type="whatsapp_message"></div>
+        </section>
+        <section class="sg-return-type-column sg-return-type-column--reminder">
+          <div class="sg-return-type-title">Lembrete</div>
+          <div class="sg-return-type-list" data-task-type="reminder"></div>
+        </section>
+      `;
+      const whatsappList = container.querySelector('[data-task-type="whatsapp_message"]');
+      const reminderList = container.querySelector('[data-task-type="reminder"]');
+      let whatsappCount = 0;
+      let reminderCount = 0;
+
       activeTasks.forEach(task => {
         const card = document.createElement('div');
         card.className = 'sg-return-card';
@@ -2233,20 +2286,21 @@
         card.style.background = 'rgba(29, 47, 90, 0.2)';
         card.style.border = '1px solid #1d2f5a';
         card.style.borderRadius = '6px';
+        card.style.textAlign = 'center';
 
         const dateStr = new Date(task.scheduled_at).toLocaleString('pt-BR');
         const typeLabel = task.type === 'whatsapp_message' ? 'Mensagem WhatsApp' : 'Lembrete';
         const titleContent = task.type === 'whatsapp_message' ? task.whatsapp_message : task.title;
 
         card.innerHTML = `
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+          <div class="sg-return-item-header" style="display:flex;justify-content:center;align-items:center;flex-direction:column;gap:3px;text-align:center;margin-bottom:6px;">
             <span style="font-weight: bold; font-size: 11.5px; color: #d4af37;">${typeLabel}</span>
             <span style="font-size: 10px; color: #8a9fc4;">${dateStr}</span>
           </div>
           <div style="font-size: 12px; color: #fff; margin-bottom: 6px; font-weight: 500; white-space: pre-wrap;">${titleContent}</div>
           ${task.internal_note ? `<div style="font-size: 11px; color: #8a9fc4; margin-bottom: 8px; font-style: italic; background: rgba(0,0,0,0.1); padding: 4px 8px; border-radius: 4px;">Obs: ${task.internal_note}</div>` : ''}
-          <div style="display: flex; gap: 6px;">
-            ${task.type === 'whatsapp_message' && task.lead_telefone ? `<button type="button" class="sg-app-btn sg-app-btn--whatsapp" style="font-size: 10.5px; padding: 4px 8px;" data-id="${task.id}">Abrir WhatsApp</button>` : ''}
+          <div class="sg-return-item-actions" style="display:flex;justify-content:center;align-items:center;flex-wrap:wrap;gap:6px;">
+            ${task.type === 'whatsapp_message' && task.lead_telefone ? `<button type="button" class="sg-app-btn sg-app-btn--whatsapp" style="font-size: 10px; padding: 4px 6px;" data-id="${task.id}">WhatsApp</button>` : ''}
             <button type="button" class="sg-app-btn sg-app-btn--done" style="font-size: 10.5px; padding: 4px 8px; background: rgba(76, 175, 80, 0.15); border-color: rgba(76, 175, 80, 0.4); color: #4caf50;" data-id="${task.id}">Feito</button>
             <button type="button" class="sg-app-btn sg-app-btn--cancel" style="font-size: 10.5px; padding: 4px 8px; background: rgba(244, 67, 54, 0.1); border-color: rgba(244, 67, 54, 0.4); color: #f44336;" data-id="${task.id}">Cancelar</button>
           </div>
@@ -2267,11 +2321,28 @@
           cancelTask(task.id);
         });
 
-        container.appendChild(card);
+        if (task.type === 'whatsapp_message') {
+          whatsappList.appendChild(card);
+          whatsappCount += 1;
+        } else {
+          reminderList.appendChild(card);
+          reminderCount += 1;
+        }
       });
+
+      if (whatsappCount === 0) {
+        whatsappList.innerHTML = '<div class="sg-return-column-empty">Nenhuma mensagem WhatsApp.</div>';
+      }
+      if (reminderCount === 0) {
+        reminderList.innerHTML = '<div class="sg-return-column-empty">Nenhum lembrete.</div>';
+      }
     } catch (err) {
       console.error('[Seven Gold CRM][Tarefas] Falha ao carregar tarefas:', err);
-      container.innerHTML = `<div class="sg-empty-state" style="color: #f44336;">Erro ao carregar tarefas: ${err.message || 'de rede'}</div>`;
+      if (/sess[aã]o inv[aá]lida/i.test(String(err?.message || err))) {
+        container.innerHTML = `<div class="sg-empty-state" style="color: #ffcc66;"><strong>Sessão inválida.</strong> Saia da extensão e entre novamente com sua conta do Google.</div>`;
+      } else {
+        container.innerHTML = `<div class="sg-empty-state" style="color: #f44336;">Erro ao carregar tarefas: ${err.message || 'de rede'}</div>`;
+      }
     }
   }
 
@@ -2325,7 +2396,21 @@
           el.innerHTML = `<div class="sg-empty-state">${emptyMsg}</div>`;
           return;
         }
-        el.innerHTML = '';
+        el.innerHTML = `
+          <section class="sg-return-type-column sg-return-type-column--whatsapp">
+            <div class="sg-return-type-title">Mensagem WhatsApp</div>
+            <div class="sg-return-type-list" data-return-type="whatsapp_message"></div>
+          </section>
+          <section class="sg-return-type-column sg-return-type-column--reminder">
+            <div class="sg-return-type-title">Lembrete</div>
+            <div class="sg-return-type-list" data-return-type="reminder"></div>
+          </section>
+        `;
+        const whatsappList = el.querySelector('[data-return-type="whatsapp_message"]');
+        const reminderList = el.querySelector('[data-return-type="reminder"]');
+        let whatsappCount = 0;
+        let reminderCount = 0;
+
         taskList.forEach(task => {
           const card = document.createElement('div');
           card.className = 'sg-return-card';
@@ -2340,15 +2425,15 @@
           const titleContent = task.type === 'whatsapp_message' ? task.whatsapp_message : task.title;
 
           card.innerHTML = `
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <div class="sg-return-item-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
               <span style="font-weight: bold; font-size: 11.5px; color: #d4af37;">${typeLabel}</span>
               <span style="font-size: 10px; color: #8a9fc4;">${dateStr}</span>
             </div>
             <div style="font-size: 12px; color: #fff; font-weight: bold; margin-bottom: 2px;">Cliente: ${task.lead_nome}</div>
             <div style="font-size: 12px; color: #fff; margin-bottom: 6px; white-space: pre-wrap;">${titleContent}</div>
             ${task.internal_note ? `<div style="font-size: 11px; color: #8a9fc4; margin-bottom: 8px; font-style: italic; background: rgba(0,0,0,0.1); padding: 4px 8px; border-radius: 4px;">Obs: ${task.internal_note}</div>` : ''}
-            <div style="display: flex; gap: 6px;">
-              ${task.type === 'whatsapp_message' && task.lead_telefone ? `<button type="button" class="sg-app-btn sg-app-btn--whatsapp" style="font-size: 10.5px; padding: 4px 8px;" data-id="${task.id}">Abrir WhatsApp</button>` : ''}
+            <div class="sg-return-item-actions" style="display: flex; gap: 6px;">
+              ${task.type === 'whatsapp_message' && task.lead_telefone ? `<button type="button" class="sg-app-btn sg-app-btn--whatsapp" style="font-size: 10px; padding: 4px 6px;" data-id="${task.id}">WhatsApp</button>` : ''}
               <button type="button" class="sg-app-btn sg-app-btn--done" style="font-size: 10.5px; padding: 4px 8px; background: rgba(76, 175, 80, 0.15); border-color: rgba(76, 175, 80, 0.4); color: #4caf50;" data-id="${task.id}">Feito</button>
               <button type="button" class="sg-app-btn sg-app-btn--cancel" style="font-size: 10.5px; padding: 4px 8px; background: rgba(244, 67, 54, 0.1); border-color: rgba(244, 67, 54, 0.4); color: #f44336;" data-id="${task.id}">Cancelar</button>
             </div>
@@ -2369,16 +2454,35 @@
             cancelTask(task.id);
           });
 
-          el.appendChild(card);
+          if (task.type === 'whatsapp_message') {
+            whatsappList.appendChild(card);
+            whatsappCount += 1;
+          } else {
+            reminderList.appendChild(card);
+            reminderCount += 1;
+          }
         });
+
+        if (whatsappCount === 0) {
+          whatsappList.innerHTML = '<div class="sg-return-column-empty">Nenhuma mensagem WhatsApp.</div>';
+        }
+        if (reminderCount === 0) {
+          reminderList.innerHTML = '<div class="sg-return-column-empty">Nenhum lembrete.</div>';
+        }
       };
 
       renderList(todayTasks, todayContainer, 'Nenhum retorno para hoje.');
       renderList([...todayTasks, ...futureTasks], allContainer, 'Nenhum retorno cadastrado.');
     } catch (err) {
       console.error('[Seven Gold CRM][Tarefas] Falha ao carregar todos os retornos:', err);
-      todayContainer.innerHTML = `<div class="sg-empty-state" style="color: #f44336;">Erro ao carregar retornos: ${err.message || 'de rede'}</div>`;
-      allContainer.innerHTML = todayContainer.innerHTML;
+      if (/sess[aã]o inv[aá]lida/i.test(String(err?.message || err))) {
+        const msg = `<div class="sg-empty-state" style="color: #ffcc66;"><strong>Sessão inválida.</strong> Saia da extensão e entre novamente com sua conta do Google.</div>`;
+        todayContainer.innerHTML = msg;
+        allContainer.innerHTML = msg;
+      } else {
+        todayContainer.innerHTML = `<div class="sg-empty-state" style="color: #f44336;">Erro ao carregar retornos: ${err.message || 'de rede'}</div>`;
+        allContainer.innerHTML = todayContainer.innerHTML;
+      }
     }
   }
 
@@ -2388,7 +2492,7 @@
   if (returnsAllToggle && returnsAllContainer) {
     returnsAllToggle.addEventListener('click', () => {
       const isHidden = returnsAllContainer.style.display === 'none';
-      returnsAllContainer.style.display = isHidden ? 'flex' : 'none';
+      returnsAllContainer.style.display = isHidden ? 'grid' : 'none';
       if (returnsAllArrow) {
         returnsAllArrow.style.transform = isHidden ? 'rotate(180deg)' : 'rotate(0deg)';
       }
@@ -4078,12 +4182,21 @@
         raw: error,
       });
 
-      container.innerHTML = `
-        <div style="padding: 16px; color: #f44336; font-weight: 600; text-align: center; font-size: 11px; display: flex; flex-direction: column; align-items: center; gap: 8px;">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-          <span>Erro ao carregar calendário: ${error.message || "Erro desconhecido."}</span>
-        </div>
-      `;
+      if (/sess[aã]o inv[aá]lida/i.test(String(error?.message || error))) {
+        container.innerHTML = `
+          <div style="padding: 16px; color: #ffcc66; font-weight: 600; text-align: center; font-size: 11px; display: flex; flex-direction: column; align-items: center; gap: 8px;">
+            <strong>Sessão inválida.</strong>
+            <span>Saia da extensão e entre novamente com sua conta do Google.</span>
+          </div>
+        `;
+      } else {
+        container.innerHTML = `
+          <div style="padding: 16px; color: #f44336; font-weight: 600; text-align: center; font-size: 11px; display: flex; flex-direction: column; align-items: center; gap: 8px;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            <span>Erro ao carregar calendário: ${error.message || "Erro desconhecido."}</span>
+          </div>
+        `;
+      }
       return;
     }
 
@@ -4164,7 +4277,7 @@
       
       // Capitalizar a primeira letra do dia da semana
       const dayLabel = day.label.charAt(0).toUpperCase() + day.label.slice(1);
-      daySection.innerHTML = `<div style="font-weight: 700; color: #d4af37; font-size: 12.5px; border-bottom: 1px solid #1d2f5a; padding-bottom: 4px; margin-bottom: 6px;">${dayLabel}</div>`;
+      daySection.innerHTML = `<div style="font-weight: 700; color: #d4af37; font-size: 12.5px; border-bottom: 1px solid #1d2f5a; padding-bottom: 4px; margin-bottom: 6px; text-align: center;">${dayLabel}</div>`;
 
       if (day.appointments.length === 0) {
         const empty = document.createElement('div');
@@ -4172,15 +4285,13 @@
         empty.style.color = '#556c94';
         empty.style.fontSize = '11px';
         empty.style.fontStyle = 'italic';
-        empty.style.padding = '2px 0 8px 12px';
+        empty.style.padding = '2px 0 8px 0';
+        empty.style.textAlign = 'center';
         empty.textContent = 'Nenhum agendamento';
         daySection.appendChild(empty);
       } else {
         const appsContainer = document.createElement('div');
-        appsContainer.style.display = 'flex';
-        appsContainer.style.flexDirection = 'column';
-        appsContainer.style.gap = '8px';
-        appsContainer.style.paddingBottom = '8px';
+        appsContainer.className = 'sg-calendar-day-appointments';
 
         day.appointments.forEach(appt => {
           const card = document.createElement('div');

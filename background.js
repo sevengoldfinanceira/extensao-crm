@@ -553,24 +553,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return body;
     };
 
-    Promise.all([
-      fetchCrmApi(`${CRM_API_BASE_URL}/api/permissions/save`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pipeline_action: 'list_leads' }),
-      }).then((response) => parseResponse(response, 'Leads')),
-      fetchCrmApi(`${CRM_API_BASE_URL}/api/tasks/list`)
-        .then((response) => parseResponse(response, 'Tarefas')),
-      fetchCrmApi(`${SUPABASE_URL}/rest/v1/appointments?select=id,lead_id,usuario_id,data_agendamento,hora_agendamento,status,created_at&order=data_agendamento.asc`, {
-        headers: { apikey: SUPABASE_PUBLISHABLE_KEY },
-      }).then((response) => parseResponse(response, 'Agendamentos')),
-    ])
-      .then(([leadResult, taskResult, appointments]) => {
+    fetchCrmApi(`${CRM_API_BASE_URL}/api/permissions/save`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pipeline_action: 'dashboard_history' }),
+    })
+      .then((response) => parseResponse(response, 'Dashboard'))
+      .then((dashboardResult) => {
         sendResponse({
           ok: true,
-          leads: leadResult?.leads || [],
-          tasks: Array.isArray(taskResult) ? taskResult : (taskResult?.tasks || []),
-          appointments: Array.isArray(appointments) ? appointments : [],
+          leads: Array.isArray(dashboardResult?.leads) ? dashboardResult.leads : [],
+          stageEvents: Array.isArray(dashboardResult?.stageEvents) ? dashboardResult.stageEvents : [],
+          appointments: Array.isArray(dashboardResult?.appointments) ? dashboardResult.appointments : [],
         });
       })
       .catch((error) => {
