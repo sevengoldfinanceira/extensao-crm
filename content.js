@@ -1202,6 +1202,7 @@
       const notAttended = Math.max(receivedLeads - inService, 0);
       const totalAppointments = scheduledLeadKeys.size;
       const storeClients = storeLeadIds.size;
+      const noShows = Math.max(totalAppointments - storeClients, 0);
       const inApproval = leads.filter((lead) =>
         ['em_aprovacao', 'proposta_enviada'].includes(normalizeStage(lead.status))
       ).length;
@@ -1216,6 +1217,7 @@
         'sg-dash-new-leads': notAttended,
         'sg-dash-appointments': totalAppointments,
         'sg-dash-next-appointments': storeClients,
+        'sg-dash-no-shows': noShows,
         'sg-dash-tasks': inApproval,
         'sg-dash-overdue': notWant,
         'sg-dash-closed': closedLeads,
@@ -1227,6 +1229,7 @@
         'sg-dash-new-leads-pct': percent(notAttended, receivedLeads),
         'sg-dash-appointments-pct': percent(totalAppointments, inService),
         'sg-dash-next-appointments-pct': percent(storeClients, totalAppointments),
+        'sg-dash-no-shows-pct': percent(noShows, totalAppointments),
         'sg-dash-tasks-pct': percent(inApproval, storeClients),
         'sg-dash-overdue-pct': percent(notWant, storeClients),
         'sg-dash-closed-pct': percent(closedLeads, storeClients),
@@ -1415,6 +1418,11 @@
               <div class="sg-dash-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg></div>
               <div class="sg-dash-title">Clientes em loja</div>
               <div class="sg-dash-row"><span class="sg-dash-value" id="sg-dash-next-appointments">0</span><span class="sg-dash-pct" id="sg-dash-next-appointments-pct">0%</span></div>
+            </div>
+            <div class="sg-dash-metric-card" style="--card-accent:#e11d48;--card-icon-bg:rgba(225,29,72,0.15);">
+              <div class="sg-dash-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="17" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="9" y1="14" x2="15" y2="20"/><line x1="15" y1="14" x2="9" y2="20"/></svg></div>
+              <div class="sg-dash-title">Não vieram</div>
+              <div class="sg-dash-row"><span class="sg-dash-value" id="sg-dash-no-shows">0</span><span class="sg-dash-pct" id="sg-dash-no-shows-pct">0%</span></div>
             </div>
             <div class="sg-dash-metric-card" style="--card-accent:#a855f7;--card-icon-bg:rgba(168,85,247,0.15);">
               <div class="sg-dash-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/></svg></div>
