@@ -1082,11 +1082,9 @@
       const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
       const attemptDelays = [1200, 1200, 1800, 2500];
 
-      // Em contatos não salvos o próprio cabeçalho frequentemente contém o
-      // telefone. Esse caminho não depende do painel lateral nem do zoom.
-      const headerPhone = normalizeCapturedPhone(headerName);
       let phone = '';
       let finalName = '';
+      let contactPanelOpened = panelAlreadyOpen;
 
       for (let i = 0; i < attemptDelays.length; i++) {
         // Aguardar o delay correspondente da etapa
@@ -1095,6 +1093,7 @@
         // Verificar se "Dados do contato" está aberto
         const currentContainer = findContactPanelContainer();
         if (currentContainer) {
+          contactPanelOpened = true;
           const rawText = currentContainer.innerText || currentContainer.textContent || '';
           const text = normalizeText(rawText);
           phone = extractPhoneFromText(text, currentContainer);
@@ -1129,26 +1128,14 @@
         }
       }
 
-      // Se o painel não foi encontrado, ainda é possível capturar contatos
-      // não salvos cujo telefone aparece no cabeçalho da conversa.
-      if (!phone && headerPhone) {
-        phone = headerPhone;
-        finalName = phone;
-        form.telefone.value = phone;
-        form.nome.value = finalName;
-        showStatus('Lead capturado. Confira os dados antes de salvar.', 'success');
-      }
-
       if (!phone) {
-        // Se após todas as tentativas não encontrar telefone, mostrar erro final:
         form.telefone.value = '';
-        if (headerName && validateCapturedName(headerName)) {
-          form.nome.value = headerName;
+        form.nome.value = '';
+        if (!contactPanelOpened) {
+          showStatus('Não consegui abrir os dados do contato. Clique novamente em Capturar lead.', 'warning');
+        } else {
+          showStatus('Não encontrei um telefone válido nos dados do contato. Preencha manualmente.', 'warning');
         }
-        showStatus(
-          'Não encontrei um telefone válido. Abra os dados do contato ou preencha manualmente.',
-          'warning'
-        );
       }
 
     } catch (err) {
@@ -1224,6 +1211,41 @@
     }
   }
 
+  function getConversationHeaderClickTargets(mainHeader) {
+    const targets = [];
+    const addTarget = (el) => {
+      if (!el || !mainHeader.contains(el) || !isElementVisible(el) || targets.includes(el)) return;
+      targets.push(el);
+    };
+
+    // O avatar é o alvo mais estável do WhatsApp para abrir os dados.
+    const avatar = mainHeader.querySelector(
+      '[data-testid*="avatar"], img, [data-icon="default-user"], [data-testid="default-user"]'
+    );
+    if (avatar) {
+      addTarget(avatar.closest('[role="button"], button, [tabindex="0"]') || avatar.parentElement || avatar);
+      addTarget(avatar);
+    }
+
+    const identityElements = mainHeader.querySelectorAll(
+      '[data-testid="conversation-info-header"], [data-testid="conversation-header"], span[title], span[dir="auto"]'
+    );
+    for (const identity of identityElements) {
+      const value = (identity.getAttribute('title') || identity.textContent || '').trim();
+      if (!value || isStatusText(value) || CONTACT_PANEL_LABEL_PATTERN.test(value)) continue;
+
+      addTarget(identity.closest('[role="button"], button, [tabindex="0"]'));
+      let ancestor = identity;
+      for (let level = 0; level < 4 && ancestor && ancestor !== mainHeader; level++) {
+        addTarget(ancestor);
+        ancestor = ancestor.parentElement;
+      }
+    }
+
+    addTarget(mainHeader);
+    return targets;
+  }
+
   function clickConversationHeader(strategy = 0, silent = false) {
     const mainHeader = document.querySelector("#main header");
     if (!mainHeader) {
@@ -1232,24 +1254,14 @@
     }
 
     try {
-      const identity = mainHeader.querySelector(
-        '[data-testid="conversation-info-header"], [data-testid="conversation-header"], span[title], span[dir="auto"]'
-      );
-
-      if (identity && isElementVisible(identity)) {
-        const roleButton = identity.closest('[role="button"]');
-        const identityBlock = roleButton && mainHeader.contains(roleButton)
-          ? roleButton
-          : identity.parentElement;
-
-        if (strategy === 0 && dispatchHeaderClick(identityBlock || identity)) return true;
-        if (strategy === 1 && dispatchHeaderClick(identity)) return true;
-        if (strategy === 2 && identityBlock && dispatchHeaderClick(identityBlock.parentElement || identityBlock)) return true;
-      }
+      const targets = getConversationHeaderClickTargets(mainHeader);
+      const selectedTarget = targets[Math.min(strategy, Math.max(0, targets.length - 1))];
+      if (selectedTarget && dispatchHeaderClick(selectedTarget)) return true;
 
       const rect = mainHeader.getBoundingClientRect();
-      const relativeX = strategy >= 3 ? 0.35 : 0.2;
-      const x = rect.left + Math.min(140, Math.max(24, rect.width * relativeX));
+      // Fallback geométrico: primeiro avatar, depois bloco do nome.
+      const xOffsets = [32, 72, 120, Math.max(32, rect.width * 0.3)];
+      const x = rect.left + Math.min(rect.width - 2, xOffsets[Math.min(strategy, xOffsets.length - 1)]);
       const y = rect.top + rect.height / 2;
 
       const targetEl = document.elementFromPoint(x, y);
