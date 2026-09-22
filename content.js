@@ -1067,9 +1067,10 @@
         }
       }
 
-      // Se não estiver aberto, clicar uma única vez no #main header para abrir
+      // Se não estiver aberto, iniciar a abertura pelo cabeçalho da conversa.
+      // A abertura será confirmada e repetida abaixo, se necessário.
       if (!panelAlreadyOpen) {
-        const headerClicked = clickConversationHeader();
+        const headerClicked = clickConversationHeader(0);
         if (!headerClicked) {
           return; // clickConversationHeader já mostra a mensagem "Abra uma conversa..."
         }
@@ -1119,6 +1120,12 @@
             showStatus('Lead capturado. Confira os dados antes de salvar.', 'success');
             break;
           }
+        } else if (i < attemptDelays.length - 1) {
+          // O WhatsApp muda o elemento clicável conforme versão, zoom e
+          // largura da janela. Se o painel ainda não abriu, tenta novamente
+          // usando outra área do cabeçalho em vez de assumir sucesso.
+          showStatus('Abrindo dados do contato...', 'warning');
+          clickConversationHeader(i + 1, true);
         }
       }
 
@@ -1180,42 +1187,74 @@
     await handleCrmQuery();
   }
 
-  function clickConversationHeader() {
+  function dispatchHeaderClick(target) {
+    if (!target || !isElementVisible(target)) return false;
+    const rect = target.getBoundingClientRect();
+    const clientX = rect.left + Math.max(1, rect.width / 2);
+    const clientY = rect.top + Math.max(1, rect.height / 2);
+    const eventInit = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: window,
+      clientX,
+      clientY,
+      button: 0,
+      buttons: 1,
+    };
+
+    try {
+      if (typeof PointerEvent === 'function') {
+        target.dispatchEvent(new PointerEvent('pointerdown', { ...eventInit, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+      }
+      target.dispatchEvent(new MouseEvent('mousedown', eventInit));
+      target.dispatchEvent(new MouseEvent('mouseup', { ...eventInit, buttons: 0 }));
+      if (typeof PointerEvent === 'function') {
+        target.dispatchEvent(new PointerEvent('pointerup', { ...eventInit, buttons: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+      }
+      target.dispatchEvent(new MouseEvent('click', { ...eventInit, buttons: 0 }));
+      return true;
+    } catch {
+      try {
+        target.click();
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }
+
+  function clickConversationHeader(strategy = 0, silent = false) {
     const mainHeader = document.querySelector("#main header");
     if (!mainHeader) {
-      showStatus('Abra uma conversa no WhatsApp Web antes de capturar.', 'warning');
+      if (!silent) showStatus('Abra uma conversa no WhatsApp Web antes de capturar.', 'warning');
       return false;
     }
 
     try {
-      const semanticTarget = mainHeader.querySelector(
+      const identity = mainHeader.querySelector(
         '[data-testid="conversation-info-header"], [data-testid="conversation-header"], span[title], span[dir="auto"]'
       );
-      if (semanticTarget && isElementVisible(semanticTarget)) {
-        const clickable = semanticTarget.closest('[role="button"]') || semanticTarget;
-        clickable.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-        return true;
+
+      if (identity && isElementVisible(identity)) {
+        const roleButton = identity.closest('[role="button"]');
+        const identityBlock = roleButton && mainHeader.contains(roleButton)
+          ? roleButton
+          : identity.parentElement;
+
+        if (strategy === 0 && dispatchHeaderClick(identityBlock || identity)) return true;
+        if (strategy === 1 && dispatchHeaderClick(identity)) return true;
+        if (strategy === 2 && identityBlock && dispatchHeaderClick(identityBlock.parentElement || identityBlock)) return true;
       }
 
       const rect = mainHeader.getBoundingClientRect();
-      const x = rect.left + Math.min(90, Math.max(24, rect.width * 0.2));
+      const relativeX = strategy >= 3 ? 0.35 : 0.2;
+      const x = rect.left + Math.min(140, Math.max(24, rect.width * relativeX));
       const y = rect.top + rect.height / 2;
 
       const targetEl = document.elementFromPoint(x, y);
-      if (targetEl) {
-        const clickEvent = new MouseEvent('click', {
-          bubbles: true,
-          cancelable: true,
-          view: window,
-          clientX: x,
-          clientY: y
-        });
-        targetEl.dispatchEvent(clickEvent);
-        return true;
-      } else {
-        mainHeader.click();
-        return true;
-      }
+      if (targetEl && mainHeader.contains(targetEl) && dispatchHeaderClick(targetEl)) return true;
+      return dispatchHeaderClick(mainHeader);
     } catch (err) {
       if (DEBUG) console.error('[Seven Gold CRM] Erro ao clicar no header:', err);
     }
@@ -1980,7 +2019,7 @@
 
       <div style="text-align: center; font-size: 10px; color: #555; padding: 12px 16px; border-top: 1px solid #1d2f5a; background-color: #0d1730; flex-shrink: 0; display: flex; align-items: center; justify-content: center; gap: 4px;">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: #d4af37;"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-        <span>Seven Gold CRM • Extensão v1.0.4</span>
+        <span>Seven Gold CRM • Extensão v${chrome.runtime.getManifest().version}</span>
       </div>
     `;
 

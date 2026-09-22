@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Seven Gold CRM",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAukLEVUt7TJJSH1yLn+fD/59AlXFTqA7Ywv8iD1cPCszqxLyHGwZWqUgmQvZCjHH2bKm5i4xNAveWl9j1gBJLM95CescvyPMqZn4m/UFK2tcLTKEbzEsO/hqlEdE3ozdPL2rdKdyCurjKd+MG9IuRMr/qOz2lVTVOvd3psPdJsi2uWOhOs2pm+XPgozoESuH4/OceTmkSRLLvl2RZrI0m/+DvulrrJx0OKMLijVX/M2HKBE63+egIcpPi3qBTbidogWDXVZXCRlbxbg2sCAhcw6NafS4IvPcE1dgITAhbN3S/gyC/AMOj8IaTyqITNMXq59wLDSpsBfDt4VIMTFUMswIDAQAB",
   "description": "CRM integrado ao WhatsApp Web",
   "permissions": ["alarms", "identity", "notifications", "storage", "tabs", "scripting"],
