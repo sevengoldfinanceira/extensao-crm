@@ -457,6 +457,14 @@
     'clique',
     'mostrar os dados',
     'dados do contato',
+    'dados do contacto',
+    'detalhes do contato',
+    'detalhes do contacto',
+    'informações do contato',
+    'informações de contato',
+    'contact info',
+    'contact details',
+    'información del contacto',
     'visto por último',
     'online',
     'digitando',
@@ -567,7 +575,7 @@
     return text.replace(/[^\d]/g, '');
   }
 
-  const CONTACT_PANEL_LABEL_PATTERN = /(?:dados|detalhes|info(?:rma(?:ç|c)[õo]es?)?)\s+(?:(?:do|de)\s+)?contato|contact\s+(?:info|details)(?:rmation)?|info(?:rmaci[oó]n)?\s+(?:del\s+)?contacto/i;
+  const CONTACT_PANEL_LABEL_PATTERN = /(?:dados|detalhes|info(?:rma(?:ç|c)[õo]es?)?)\s+(?:(?:do|de)\s+)?conta(?:c)?to|contact\s+(?:info(?:rmation)?|details)|info(?:rmaci[oó]n)?\s+(?:del\s+)?contacto/i;
 
   function isElementVisible(el) {
     if (!el || !(el instanceof Element) || isInsideExtension(el)) return false;
@@ -832,7 +840,9 @@
   const FORBIDDEN_NAME_WORDS = [
     'criptografia', 'mensagens', 'mídia', 'midia', 'links', 'docs',
     'dias', 'online', 'visto por último', 'visto por ultimo',
-    'clique', 'dados do contato', 'conversa', 'grupo', 'participante'
+    'clique', 'dados do contato', 'dados do contacto', 'detalhes do contato',
+    'detalhes do contacto', 'contact info', 'contact details', 'conversa',
+    'grupo', 'participante'
   ];
 
   function extractLeadNameFromContactPanel(panelText, capturedPhone) {
@@ -864,7 +874,9 @@
     for (const line of lines) {
       const lower = line.toLowerCase();
       const hasForbiddenWord = FORBIDDEN_NAME_WORDS.some(word => lower.includes(word));
-      if (hasForbiddenWord) continue;
+      const linePhone = normalizeCapturedPhone(line);
+      const isCapturedPhone = linePhone && linePhone === normalizePhone(capturedPhone || '');
+      if (hasForbiddenWord || CONTACT_PANEL_LABEL_PATTERN.test(line) || isCapturedPhone) continue;
       relevantLines.push(line);
     }
 
@@ -873,7 +885,7 @@
     const firstLine = relevantLines[0];
 
     // Checar se primeira linha é telefone
-    const isFirstLinePhone = firstLine.startsWith('+') && (firstLine.replace(/[^\d]/g, '').length >= 10 && firstLine.replace(/[^\d]/g, '').length <= 15);
+    const isFirstLinePhone = Boolean(normalizeCapturedPhone(firstLine));
 
     if (isFirstLinePhone) {
       // Caso 1: Primeira linha relevante começa com +.
@@ -1969,7 +1981,7 @@
 
       <div style="text-align: center; font-size: 10px; color: #555; padding: 12px 16px; border-top: 1px solid #1d2f5a; background-color: #0d1730; flex-shrink: 0; display: flex; align-items: center; justify-content: center; gap: 4px;">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: #d4af37;"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-        <span>Seven Gold CRM • Extensão v1.1</span>
+        <span>Seven Gold CRM • Extensão v1.0.2</span>
       </div>
     `;
 
