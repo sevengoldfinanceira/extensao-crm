@@ -15,6 +15,8 @@ const CRM_API_BASE_URL = CONFIG.CRM_API_BASE_URL;
 const SUPABASE_URL = CONFIG.SUPABASE_URL;
 const SUPABASE_PUBLISHABLE_KEY = CONFIG.SUPABASE_PUBLISHABLE_KEY;
 const SUPABASE_AUTH_KEY = SUPABASE_PUBLISHABLE_KEY;
+const SEVEN_GOLD_EXTENSION_ID = "mmlnacngigpmheikecpfhbnkbekobida";
+const SEVEN_GOLD_EXTENSION_REDIRECT_URL = `https://${SEVEN_GOLD_EXTENSION_ID}.chromiumapp.org/`;
 
 function assertSupabaseAuthConfig() {
   if (!SUPABASE_URL || !/^https:\/\/[a-z0-9]+\.supabase\.co$/i.test(SUPABASE_URL)) {
@@ -41,7 +43,51 @@ function safeStringify(value) {
   }
 }
 
+function assertExtensionAuthCallback(callbackUrl, expectedRedirectUrl) {
+  if (!callbackUrl || !expectedRedirectUrl) return;
+
+  const normalizedCallback = String(callbackUrl);
+  const normalizedExpected = String(expectedRedirectUrl);
+
+  if (!normalizedCallback.startsWith(normalizedExpected)) {
+    console.error("[Seven Gold CRM][Auth][BG] Callback OAuth retornou fora da extensão:", {
+      expectedRedirectUrl: normalizedExpected,
+      callbackUrl: normalizedCallback,
+    });
+
+    throw new Error(
+      `Login retornou para fora da extensão. Libere no Supabase Auth Redirect URLs: ${normalizedExpected}`
+    );
+  }
+}
+
+function getSevenGoldExtensionRedirectUrl() {
+  if (!chrome.identity?.getRedirectURL) {
+    console.error("[Seven Gold CRM][Auth][BG] chrome.identity nao disponivel.");
+    throw new Error("chrome.identity nao esta disponivel. Verifique a permissao identity no manifest.");
+  }
+
+  const runtimeRedirectUrl = chrome.identity.getRedirectURL();
+
+  if (runtimeRedirectUrl !== SEVEN_GOLD_EXTENSION_REDIRECT_URL) {
+    console.error("[Seven Gold CRM][Auth][BG] ID da extensão diferente do esperado:", {
+      expectedExtensionId: SEVEN_GOLD_EXTENSION_ID,
+      expectedRedirectUrl: SEVEN_GOLD_EXTENSION_REDIRECT_URL,
+      runtimeExtensionId: chrome.runtime?.id || null,
+      runtimeRedirectUrl,
+    });
+
+    throw new Error(
+      `A extensão está instalada com ID diferente. Remova a extensão antiga e carregue novamente esta pasta. O Redirect URL correto é: ${SEVEN_GOLD_EXTENSION_REDIRECT_URL}`
+    );
+  }
+
+  return SEVEN_GOLD_EXTENSION_REDIRECT_URL;
+}
+
 const DEBUG = false;
+let activeTokenRefreshPromise = null;
+let activeGoogleLoginPromise = null;
 
 async function fetchCrmApi(url, options = {}) {
   let { session } = await getStoredAuthSession();
@@ -70,6 +116,15 @@ async function fetchCrmApi(url, options = {}) {
 }
 
 async function getAuthorizedLeadIds() {
+  const { session, crmUser } = await getStoredAuthSession();
+  const currentEmail = String(
+    crmUser?.email || session?.user?.email || session?.user?.user_metadata?.email || ''
+  ).trim().toLowerCase();
+
+  if (!currentEmail) {
+    throw new Error('Usuário logado não identificado para validar os próprios leads.');
+  }
+
   const response = await fetchCrmApi(`${CRM_API_BASE_URL}/api/permissions/save`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -81,7 +136,14 @@ async function getAuthorizedLeadIds() {
   if (!response.ok || body?.ok !== true) {
     throw new Error(body?.error || body?.message || `Erro ao validar tarefas (HTTP ${response.status}).`);
   }
-  return new Set((body.leads || []).map((lead) => String(lead.id)));
+  const ownLeads = (body.leads || []).filter((lead) => {
+    const ownerEmail = String(
+      lead.assigned_to_email || lead.owner_email || lead.created_by_email || ''
+    ).trim().toLowerCase();
+    return ownerEmail === currentEmail;
+  });
+
+  return new Set(ownLeads.map((lead) => String(lead.id)));
 }
 
 async function assertTaskAuthorized(taskId) {
@@ -118,34 +180,44 @@ function isTokenExpired(session) {
 }
 
 async function refreshAccessToken(refreshToken) {
-  const response = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'apikey': SUPABASE_AUTH_KEY,
-    },
-    body: JSON.stringify({ refresh_token: refreshToken }),
-  });
+  if (activeTokenRefreshPromise) return activeTokenRefreshPromise;
 
-  const body = await response.json();
+  activeTokenRefreshPromise = (async () => {
+    const response = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_AUTH_KEY,
+      },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
 
-  if (!response.ok) {
-    throw new Error(body.error_description || body.error || 'Falha ao renovar token');
+    const body = await response.json();
+
+    if (!response.ok) {
+      throw new Error(body.error_description || body.error || 'Falha ao renovar token');
+    }
+
+    const { session } = await getStoredAuthSession();
+    const newSession = {
+      ...session,
+      access_token: body.access_token,
+      refresh_token: body.refresh_token || refreshToken,
+      expires_in: body.expires_in,
+      _saved_at: Date.now(),
+    };
+
+    await chrome.storage.local.set({ sevenGoldAuthSession: newSession });
+    console.log("[Seven Gold CRM][Auth][BG] Token renovado com sucesso.");
+
+    return newSession;
+  })();
+
+  try {
+    return await activeTokenRefreshPromise;
+  } finally {
+    activeTokenRefreshPromise = null;
   }
-
-  const { session } = await getStoredAuthSession();
-  const newSession = {
-    ...session,
-    access_token: body.access_token,
-    refresh_token: body.refresh_token || refreshToken,
-    expires_in: body.expires_in,
-    _saved_at: Date.now(),
-  };
-
-  await chrome.storage.local.set({ sevenGoldAuthSession: newSession });
-  console.log("[Seven Gold CRM][Auth][BG] Token renovado com sucesso.");
-
-  return newSession;
 }
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -610,7 +682,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'INSERT_TASK') {
-    const url = `${CRM_API_BASE_URL}/api/permissions/save`;
+    const url = `${CRM_API_BASE_URL}/api/tasks/create`;
 
     getAuthorizedLeadIds()
       .then((authorizedLeadIds) => {
@@ -622,13 +694,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           headers: {
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify({
-            team_action: 'create_task',
-            team_data: {
-              ...message.payload,
-              note: message.payload?.internal_note || null,
-            },
-          })
+          body: JSON.stringify(message.payload)
         });
       })
       .then(async (response) => {
@@ -771,7 +837,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.action === 'AUTH_LOGIN_GOOGLE') {
-    handleGoogleLoginInBackground()
+    getOrStartGoogleLogin()
       .then((result) => {
         sendResponse({ ok: true, session: result.session, crmUser: result.crmUser });
       })
@@ -1108,12 +1174,7 @@ async function handleGoogleLoginInBackground() {
   assertSupabaseConfig();
   assertSupabaseAuthConfig();
 
-  if (!chrome.identity?.getRedirectURL) {
-    console.error("[Seven Gold CRM][Auth][BG] chrome.identity nao disponivel.");
-    throw new Error("chrome.identity nao esta disponivel. Verifique a permissao identity no manifest.");
-  }
-
-  const redirectTo = chrome.identity.getRedirectURL();
+  const redirectTo = getSevenGoldExtensionRedirectUrl();
 
   console.log("[Seven Gold CRM][Auth][BG] Redirect URL:", redirectTo);
 
@@ -1144,6 +1205,7 @@ async function handleGoogleLoginInBackground() {
   }
 
   console.log("[Seven Gold CRM][Auth][BG] Callback recebido:", callbackUrl);
+  assertExtensionAuthCallback(callbackUrl, redirectTo);
 
   const url = new URL(callbackUrl);
   const code = url.searchParams.get("code") || new URLSearchParams(url.hash.replace("#", "")).get("code");
@@ -1184,6 +1246,17 @@ async function handleGoogleLoginInBackground() {
   });
 
   return { session, crmUser };
+}
+
+async function getOrStartGoogleLogin() {
+  if (activeGoogleLoginPromise) return activeGoogleLoginPromise;
+
+  activeGoogleLoginPromise = handleGoogleLoginInBackground();
+  try {
+    return await activeGoogleLoginPromise;
+  } finally {
+    activeGoogleLoginPromise = null;
+  }
 }
 
 async function checkCrmUserAuthorization(session) {
@@ -1253,6 +1326,10 @@ async function revalidateCrmUser() {
   if (!session) {
     await chrome.storage.local.remove(["sevenGoldAuthSession", "sevenGoldCrmUser"]);
     throw new Error("Sem sessão.");
+  }
+
+  if (session.refresh_token && isTokenExpired(session)) {
+    session = await refreshAccessToken(session.refresh_token);
   }
 
   let user = session?.user;

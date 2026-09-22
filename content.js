@@ -55,6 +55,27 @@
     };
   }
 
+  function getLeadOwnerEmail(lead = null) {
+    const ownerFromLead = lead && (
+      lead.assigned_to_email || lead.owner_email || lead.created_by_email
+    );
+    const assignedRow = document.getElementById('sg-crm-lead-assigned-row');
+    return String(ownerFromLead || assignedRow?.dataset.assignedEmail || '')
+      .trim()
+      .toLowerCase();
+  }
+
+  async function assertCurrentUserOwnsLead(lead = null) {
+    const actor = await getCurrentActor();
+    const ownerEmail = getLeadOwnerEmail(lead);
+
+    if (!ownerEmail || ownerEmail !== actor.email) {
+      throw new Error('Na extensão, você só pode alterar os seus próprios leads.');
+    }
+
+    return actor;
+  }
+
   function cleanUndefinedFields(payload) {
     Object.keys(payload).forEach((key) => {
       if (payload[key] === undefined) {
@@ -455,7 +476,16 @@
     const lower = trimmed.toLowerCase();
     if (BLOCKED_NAME_PATTERNS.some((p) => lower.includes(p))) return false;
     if (/^\d+$/.test(trimmed)) return false;
+    // Never accept a formatted phone number (for example "+55 11 99999-9999") as a name.
+    const phoneDigits = trimmed.replace(/[^\d]/g, '');
+    if (/^\+?[\d\s().-]+$/.test(trimmed) && phoneDigits.length >= 10 && phoneDigits.length <= 15) return false;
     return true;
+  }
+
+  function isPhoneNameFallback(name, phone) {
+    const nameDigits = String(name || '').replace(/[^\d]/g, '');
+    const phoneDigits = String(phone || '').replace(/[^\d]/g, '');
+    return phoneDigits.length >= 10 && nameDigits === phoneDigits;
   }
 
   function extractNameFromHeader() {
@@ -537,6 +567,65 @@
     return text.replace(/[^\d]/g, '');
   }
 
+  const CONTACT_PANEL_LABEL_PATTERN = /(?:dados|detalhes|info(?:rma(?:ç|c)[õo]es?)?)\s+(?:(?:do|de)\s+)?contato|contact\s+(?:info|details)(?:rmation)?|info(?:rmaci[oó]n)?\s+(?:del\s+)?contacto/i;
+
+  function isElementVisible(el) {
+    if (!el || !(el instanceof Element) || isInsideExtension(el)) return false;
+    const rect = el.getBoundingClientRect();
+    const style = window.getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+  }
+
+  function normalizeCapturedPhone(value) {
+    const raw = String(value || '')
+      .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g, '')
+      .trim();
+    if (!raw) return '';
+
+    const hadExplicitPlus = raw.includes('+');
+    let digits = normalizePhone(raw);
+    if (digits.startsWith('00')) digits = digits.slice(2);
+
+    // Remove o zero de operadora/tronco antes do DDD: 0XX + DDD + número.
+    if (!hadExplicitPlus && digits.startsWith('0') && digits.length >= 11 && digits.length <= 14) {
+      if (digits.length === 11 || digits.length === 12) digits = digits.slice(1);
+      else if (digits.length === 13 || digits.length === 14) digits = digits.slice(3);
+    }
+
+    // WhatsApp brasileiro pode renderizar o telefone sem o código do país.
+    if (!hadExplicitPlus && (digits.length === 10 || digits.length === 11)) digits = `55${digits}`;
+
+    const isBrazilian = (digits.length === 12 || digits.length === 13) && digits.startsWith('55');
+    const isExplicitInternational = hadExplicitPlus && digits.length >= 10 && digits.length <= 15;
+    if (!isBrazilian && !isExplicitInternational) return '';
+    if (/^(\d)\1+$/.test(digits)) return '';
+
+    return digits;
+  }
+
+  function extractPhoneMatches(value) {
+    const text = String(value || '')
+      .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g, ' ')
+      .replace(/\u00A0/g, ' ');
+    const patterns = [
+      /\+\s*\d[\d\s().-]{8,25}\d/g,
+      /(?:\+?55[\s().-]*)?\(?\d{2}\)?[\s.-]*\d{4,5}[\s.-]*\d{4}/g,
+      /(?:^|\D)(?:55)?\d{10,11}(?=\D|$)/g,
+    ];
+    const results = [];
+
+    for (const pattern of patterns) {
+      for (const match of text.matchAll(pattern)) {
+        const matchedText = match[0].trim();
+        const raw = matchedText.startsWith('+') ? matchedText : matchedText.replace(/^\D+(?=\d)/, '').trim();
+        const digits = normalizeCapturedPhone(raw);
+        if (digits) results.push({ raw, digits });
+      }
+    }
+
+    return results;
+  }
+
   function normalizeText(text) {
     return text
       .replace(/\u00A0/g, ' ')
@@ -546,26 +635,7 @@
   }
 
   function findBrazilianPhone(text) {
-    const patterns = [
-      /\+55\s*\d{2}\s*\d{4,5}-?\d{4}/g,
-      /\+55\d{10,11}/g,
-      /\(\d{2}\)\s*\d{4,5}-?\d{4}/g,
-      /\d{2}\s*\d{4,5}-?\d{4}/g,
-      /\d{10,11}/g,
-    ];
-
-    for (const re of patterns) {
-      const matches = text.match(re);
-      if (matches) {
-        for (const m of matches) {
-          const digits = normalizePhone(m);
-          if (digits.length === 11 || digits.length === 12 || digits.length === 13) {
-            return digits;
-          }
-        }
-      }
-    }
-    return '';
+    return extractPhoneMatches(text)[0]?.digits || '';
   }
 
   function isInsideExtension(el) {
@@ -581,7 +651,7 @@
     let node;
     while ((node = walker.nextNode())) {
       const t = normalizeText(node.textContent);
-      if (/dados\s+do\s+contato/i.test(t)) {
+      if (CONTACT_PANEL_LABEL_PATTERN.test(t)) {
         let el = node.parentElement;
         for (let i = 0; i < 5 && el; i++) {
           const rect = el.getBoundingClientRect();
@@ -594,24 +664,49 @@
   }
 
   function findContactPanelContainer() {
+    const semanticSelectors = [
+      '[data-testid="contact-info-drawer"]',
+      '[data-testid*="contact-info"]',
+      '[data-testid="drawer-right"]',
+      'aside',
+      '[role="dialog"]',
+      'section[data-animate-modal-popup="true"]',
+    ];
+
+    for (const selector of semanticSelectors) {
+      for (const el of document.querySelectorAll(selector)) {
+        if (!isElementVisible(el)) continue;
+        const text = normalizeText(el.innerText || el.textContent || '');
+        const rect = el.getBoundingClientRect();
+        const hasPanelLabel = CONTACT_PANEL_LABEL_PATTERN.test(text);
+        const hasPhone = findCandidatesFromContainer(el).some(candidate => !candidate.rejected);
+        const isPanelSized = rect.width >= 160 && rect.height >= Math.min(240, window.innerHeight * 0.35);
+        const isLikelyRightDrawer = isPanelSized && rect.left >= window.innerWidth * 0.4;
+        if ((hasPanelLabel && isPanelSized) || (hasPhone && isLikelyRightDrawer)) {
+          return el;
+        }
+      }
+    }
+
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     let node;
     while ((node = walker.nextNode())) {
       const t = normalizeText(node.textContent);
-      if (/dados\s+do\s+contato/i.test(t)) {
+      if (CONTACT_PANEL_LABEL_PATTERN.test(t)) {
         let el = node.parentElement;
+        let best = null;
         while (el && el !== document.body) {
           const rect = el.getBoundingClientRect();
-          if (rect.width >= 250 && rect.width <= 500 && rect.height > 400) {
-            const extPanel = document.getElementById(PANEL_ID);
-            if (extPanel && extPanel.contains(el)) {
-              el = el.parentElement;
-              continue;
-            }
-            return el;
+          if (!isInsideExtension(el) && rect.width >= 160 && rect.height >= Math.min(240, window.innerHeight * 0.35)) {
+            // Mantém o ancestral visível mais próximo. Não há limite máximo de
+            // largura: zoom e escala do sistema alteram esse valor bastante.
+            best = el;
+            if (el.matches('aside, [role="dialog"], section, [data-testid*="drawer"]')) return el;
+            break;
           }
           el = el.parentElement;
         }
+        if (best) return best;
       }
     }
     return null;
@@ -650,12 +745,12 @@
 
     const rawText = container.innerText || container.textContent || '';
     const text = normalizeText(rawText);
-    const phone = extractPhoneFromText(text);
+    const phone = extractPhoneFromText(text, container);
 
     if (!phone) {
       form.telefone.value = '';
       showStatus(
-        'Não encontrei telefone com formato internacional (+). Preencha manualmente.',
+        'Não encontrei um telefone válido. Preencha manualmente.',
         'warning'
       );
       return;
@@ -670,8 +765,8 @@
     // Only update name if it was empty/invalid and we captured a valid contactName
     const isFormNameValid = validateCapturedName(form.nome.value.trim());
 
-    if (contactName && validateCapturedName(contactName) && !isFormNameValid) {
-      form.nome.value = contactName;
+    if (!isFormNameValid) {
+      form.nome.value = contactName && validateCapturedName(contactName) ? contactName : phone;
     }
     showStatus('Lead capturado. Confira os dados antes de salvar.', 'success');
   }
@@ -745,10 +840,24 @@
 
     // Divide em linhas limpas
     const lines = panelText.split('\n')
-      .map(line => line.replace(/\u00A0/g, ' ').replace(/\s{2,}/g, ' ').trim())
+      .map(line => line
+        .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g, '')
+        .replace(/\u00A0/g, ' ')
+        .replace(/\s{2,}/g, ' ')
+        .trim())
       .filter(Boolean);
 
     if (lines.length === 0) return '';
+
+    // Em contatos não salvos, o WhatsApp mostra o telefone e, logo abaixo,
+    // o nome público do perfil prefixado por "~". Ele deve ter prioridade.
+    for (const line of lines) {
+      const profileNameMatch = line.match(/^\s*[~～]\s*(.+?)\s*$/);
+      if (!profileNameMatch) continue;
+
+      const profileName = profileNameMatch[1].trim();
+      if (validateCapturedName(profileName)) return profileName;
+    }
 
     // Filtrar linhas de instruções e metadados comuns logo no início para encontrar a primeira relevante
     const relevantLines = [];
@@ -767,20 +876,13 @@
     const isFirstLinePhone = firstLine.startsWith('+') && (firstLine.replace(/[^\d]/g, '').length >= 10 && firstLine.replace(/[^\d]/g, '').length <= 15);
 
     if (isFirstLinePhone) {
-      // Caso 1: Primeira linha relevante começa com +
-      // Procurar logo abaixo uma linha que comece com ~
-      for (let i = 1; i < relevantLines.length; i++) {
-        const line = relevantLines[i];
-        if (line.startsWith('~')) {
-          // Remover o ~ do começo do nome e retornar
-          return line.slice(1).trim();
-        }
-      }
-      // Se não houver linha com ~ abaixo, usar o próprio telefone como Nome temporário
-      return firstLine;
+      // Caso 1: Primeira linha relevante começa com +.
+      // O fallback controlado para o telefone é aplicado depois, somente se
+      // painel e cabeçalho não fornecerem um nome válido.
+      return '';
     } else {
       // Caso 2: Primeira linha relevante não começa com +
-      return firstLine;
+      return validateCapturedName(firstLine) ? firstLine : '';
     }
   }
 
@@ -809,6 +911,11 @@
         segments.push({ source: 'aria-label', text: ariaLabel, el });
       }
 
+      const href = (el.getAttribute('href') || '').trim();
+      if (href && /(?:tel:|wa\.me|phone=|@c\.us|@s\.whatsapp\.net)/i.test(href)) {
+        segments.push({ source: 'href', text: href, el });
+      }
+
       if (el.children.length === 0) {
         const text = (el.textContent || '').trim();
         if (text) {
@@ -825,42 +932,36 @@
       const normalized = seg.text.replace(/\u00A0/g, ' ').replace(/\s{2,}/g, ' ').trim();
       if (!normalized) continue;
 
-      const digits = normalized.replace(/[^\d]/g, '');
-      const startsWithPlus = normalized.startsWith('+');
-      const hasLetters = /[a-zA-Z]/g.test(normalized);
       const hasForbiddenWord = FORBIDDEN_WORDS.some(word => normalized.toLowerCase().includes(word));
-      const phoneRegex = /^\+\d[\d\s().-]{8,25}$/;
-      const isRegexMatch = phoneRegex.test(normalized);
-      const validDigitsLength = digits.length >= 10 && digits.length <= 15;
+      const matches = hasForbiddenWord ? [] : extractPhoneMatches(normalized);
 
-      let rejectedReason = '';
-      if (!startsWithPlus) rejectedReason = 'Não começa com +';
-      else if (hasLetters) rejectedReason = 'Contém letras';
-      else if (hasForbiddenWord) rejectedReason = 'Contém palavra proibida';
-      else if (!isRegexMatch) rejectedReason = 'Não passou na regex';
-      else if (!validDigitsLength) rejectedReason = `Dígitos inválidos (${digits.length})`;
-
-      if (startsWithPlus && !hasLetters && !hasForbiddenWord && isRegexMatch && validDigitsLength) {
+      if (matches.length === 0) {
         candidates.push({
           raw: normalized,
-          digits: digits,
-          source: `Seg. Individual (${seg.source})`,
-          score: normalized.startsWith('+55') ? 100 : 50
-        });
-      } else {
-        candidates.push({
-          raw: normalized,
-          digits: digits,
+          digits: normalizePhone(normalized),
           source: `Seg. Individual (${seg.source})`,
           rejected: true,
-          reason: rejectedReason
+          reason: hasForbiddenWord ? 'Contém palavra proibida' : 'Não contém telefone válido'
+        });
+        continue;
+      }
+
+      for (const match of matches) {
+        let score = match.raw.includes('+55') ? 140 : match.digits.startsWith('55') ? 110 : 70;
+        if (seg.source === 'href') score += 35;
+        if (/\(\d{2}\)/.test(match.raw)) score += 15;
+        candidates.push({
+          raw: match.raw,
+          digits: match.digits,
+          source: `Seg. Individual (${seg.source})`,
+          score
         });
       }
     }
 
     // Consecutive segments (for broken spans / lines)
     for (let i = 0; i < segments.length; i++) {
-      if (segments[i].text.includes('+')) {
+      if (/[+\d]/.test(segments[i].text)) {
         let accumulatedText = '';
         let accumDigits = '';
         let j = i;
@@ -877,17 +978,14 @@
           accumDigits = accumulatedText.replace(/[^\d]/g, '');
 
           const normalized = accumulatedText.replace(/\u00A0/g, ' ').replace(/\s{2,}/g, ' ').trim();
-          const startsWithPlus = normalized.startsWith('+');
-          const phoneRegex = /^\+\d[\d\s().-]{8,25}$/;
-          const isRegexMatch = phoneRegex.test(normalized);
-          const validDigitsLength = accumDigits.length >= 10 && accumDigits.length <= 15;
+          const normalizedPhone = normalizeCapturedPhone(normalized);
 
-          if (startsWithPlus && isRegexMatch && validDigitsLength) {
+          if (normalizedPhone) {
             candidates.push({
               raw: normalized,
-              digits: accumDigits,
+              digits: normalizedPhone,
               source: `Consecutivo (${segmentSources.join('+')})`,
-              score: normalized.startsWith('+55') ? 110 : 60
+              score: normalized.includes('+55') ? 150 : 100
             });
           }
 
@@ -900,14 +998,14 @@
     return candidates;
   }
 
-  function extractPhoneFromText(text) {
-    const container = findContactPanelContainer();
+  function extractPhoneFromText(text, preferredContainer = null) {
+    const container = preferredContainer || findContactPanelContainer();
     if (!container) return '';
 
     const candidates = findCandidatesFromContainer(container);
     const validCandidates = candidates.filter(c => !c.rejected);
 
-    if (validCandidates.length === 0) return '';
+    if (validCandidates.length === 0) return findBrazilianPhone(text);
 
     // Sort valid candidates by score descending
     validCandidates.sort((a, b) => b.score - a.score);
@@ -976,10 +1074,19 @@
       const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
       const attemptDelays = [1200, 1200, 1800, 2500];
 
-      let phone = '';
+      // Em contatos não salvos o próprio cabeçalho frequentemente contém o
+      // telefone. Esse caminho não depende do painel lateral nem do zoom.
+      let phone = normalizeCapturedPhone(headerName);
       let finalName = '';
 
-      for (let i = 0; i < attemptDelays.length; i++) {
+      if (phone) {
+        form.telefone.value = phone;
+        form.nome.value = phone;
+        finalName = phone;
+        showStatus('Lead capturado. Confira os dados antes de salvar.', 'success');
+      }
+
+      for (let i = 0; i < attemptDelays.length && !phone; i++) {
         // Aguardar o delay correspondente da etapa
         await sleep(attemptDelays[i]);
 
@@ -988,7 +1095,7 @@
         if (currentContainer) {
           const rawText = currentContainer.innerText || currentContainer.textContent || '';
           const text = normalizeText(rawText);
-          phone = extractPhoneFromText(text);
+          phone = extractPhoneFromText(text, currentContainer);
           if (phone) {
             // Extrair o nome do lead a partir do painel
             finalName = extractLeadNameFromContactPanel(rawText, phone);
@@ -998,6 +1105,12 @@
               if (headerName && validateCapturedName(headerName)) {
                 finalName = headerName;
               }
+            }
+
+            // Contatos sem nome público precisam de um identificador para que
+            // o campo obrigatório não impeça o salvamento do lead.
+            if (!finalName || !validateCapturedName(finalName)) {
+              finalName = phone;
             }
 
             form.telefone.value = phone;
@@ -1015,7 +1128,7 @@
           form.nome.value = headerName;
         }
         showStatus(
-          'Não encontrei telefone com formato internacional (+). Preencha manualmente.',
+          'Não encontrei um telefone válido. Abra os dados do contato ou preencha manualmente.',
           'warning'
         );
       }
@@ -1064,8 +1177,17 @@
     }
 
     try {
+      const semanticTarget = mainHeader.querySelector(
+        '[data-testid="conversation-info-header"], [data-testid="conversation-header"], span[title], span[dir="auto"]'
+      );
+      if (semanticTarget && isElementVisible(semanticTarget)) {
+        const clickable = semanticTarget.closest('[role="button"]') || semanticTarget;
+        clickable.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+        return true;
+      }
+
       const rect = mainHeader.getBoundingClientRect();
-      const x = rect.left + 90;
+      const x = rect.left + Math.min(90, Math.max(24, rect.width * 0.2));
       const y = rect.top + rect.height / 2;
 
       const targetEl = document.elementFromPoint(x, y);
@@ -1380,7 +1502,7 @@
       <section class="sg-tab-content" data-tab="dashboard" aria-label="Dashboard">
         <div class="sg-scroll-body">
           <div class="sg-tab-heading" style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;">
-            <div style="display:flex;align-items:center;gap:10px;"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2.2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg><h2 style="margin:0;font-size:17px;color:#fff;">Resumo comercial</h2></div>
+            <div style="display:flex;align-items:center;gap:10px;"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="#f6d77a" stroke-width="2.2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg><h2 style="margin:0;font-size:17px;color:#fff;">Resumo comercial</h2></div>
             <div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px;">
               <div class="sg-dashboard-period" role="group" aria-label="Período do dashboard" style="display:flex;gap:3px;padding:3px;border:1px solid #1d2f5a;border-radius:7px;background:#081026;">
                 <button type="button" class="active" data-dashboard-period="day" style="padding:5px 9px;border:0;border-radius:5px;background:#d4af37;color:#081026;font-size:10px;font-weight:800;cursor:pointer;">Dia</button>
@@ -1452,6 +1574,16 @@
 
       <section class="sg-tab-content active" data-tab="capture" aria-label="Capturar lead">
       <div class="sg-scroll-body">
+        <div class="sg-capture-heading">
+          <div class="sg-capture-heading-icon" aria-hidden="true">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+          </div>
+          <div class="sg-tab-heading">
+            <h2>Salvar lead</h2>
+            <p>Capture os dados desta conversa e salve no funil.</p>
+          </div>
+        </div>
+
         <button type="button" id="seven-gold-help-toggle" class="sg-help-toggle" aria-expanded="false" aria-controls="seven-gold-help-content">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 1 1 5.83 1c0 2-3 2-3 4"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
           <span>Como usar</span>
@@ -1776,7 +1908,7 @@
         </div>
 
         <div class="sg-return-card">
-          <div id="sg-returns-all-toggle" class="sg-card-title" style="cursor: pointer; user-select: none;">
+          <div id="sg-returns-all-toggle" class="sg-card-title" role="button" tabindex="0" aria-expanded="false" aria-controls="sg-returns-all-container" style="cursor: pointer; user-select: none;">
             Todos os retornos
             <svg id="sg-returns-all-arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="margin-left: 6px; transition: transform 0.2s; vertical-align: middle;"><polyline points="6 9 12 15 18 9"/></svg>
           </div>
@@ -1789,9 +1921,14 @@
 
       <section class="sg-tab-content" data-tab="calendar" aria-label="Calendário">
       <div class="sg-scroll-body">
-        <div class="sg-tab-heading" style="margin-bottom: 8px;">
-          <h2>Calendário</h2>
-          <p>Agendamentos dos clientes</p>
+        <div class="sg-calendar-heading">
+          <div class="sg-calendar-heading-icon" aria-hidden="true">
+            <svg width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="17" rx="2"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="3" y1="9" x2="21" y2="9"/></svg>
+          </div>
+          <div class="sg-tab-heading">
+            <h2>Calendário</h2>
+            <p>Agendamentos dos clientes</p>
+          </div>
         </div>
 
         <button type="button" class="sg-help-toggle" aria-expanded="false" style="margin-left: 16px; margin-bottom: 8px;">
@@ -1807,19 +1944,26 @@
         </div>
 
 
-        <div style="padding: 0 16px; margin-bottom: 8px; display: flex; justify-content: center; align-items: center;">
-          <span id="sg-calendar-week-label" style="font-size: 12px; font-weight: 700; color: #d4af37;">Semana: --/-- a --/--</span>
+        <div class="sg-calendar-week-card">
+          <div class="sg-calendar-week-title">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="17" rx="2"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="3" y1="9" x2="21" y2="9"/></svg>
+            <span id="sg-calendar-week-label">Semana: --/-- a --/--</span>
+          </div>
+
+          <div class="sg-calendar-nav">
+            <button type="button" id="sg-calendar-prev-btn" class="sg-calendar-nav-btn">‹&nbsp; Semana anterior</button>
+            <button type="button" id="sg-calendar-today-btn" class="sg-calendar-nav-btn">Hoje</button>
+            <button type="button" id="sg-calendar-next-btn" class="sg-calendar-nav-btn">Próxima semana &nbsp;›</button>
+          </div>
         </div>
 
-        <div class="sg-calendar-nav" style="border-top: 1px solid #1d2f5a; margin-bottom: 12px; padding: 10px 12px; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 6px; width: 100%; background: #081026;">
-          <button type="button" id="sg-calendar-prev-btn" class="sg-calendar-nav-btn" style="min-width: 0; padding: 8px 6px; white-space: nowrap;">&lt; Semana anterior</button>
-          <button type="button" id="sg-calendar-today-btn" class="sg-calendar-nav-btn" style="padding: 8px 12px; white-space: nowrap;">Hoje</button>
-          <button type="button" id="sg-calendar-next-btn" class="sg-calendar-nav-btn" style="min-width: 0; padding: 8px 6px; white-space: nowrap;">Próxima semana &gt;</button>
-        </div>
-
-        <div id="sg-calendar-week-list-container" class="sg-calendar-week-list" style="padding: 0 16px 16px; display: flex; flex-direction: column; gap: 12px;">
+        <div id="sg-calendar-week-list-container" class="sg-calendar-week-list">
           <!-- Lista semanal renderizada dinamicamente -->
         </div>
+      </div>
+      <div class="sg-calendar-scroll-controls" aria-label="Controles de rolagem do calendário" hidden>
+        <button type="button" id="sg-calendar-scroll-up" aria-label="Subir no calendário" title="Subir">↑</button>
+        <button type="button" id="sg-calendar-scroll-down" aria-label="Ver próximos dias" title="Ver próximos dias">↓</button>
       </div>
       </section>
 
@@ -1901,6 +2045,25 @@
 
     panel.querySelector('#seven-gold-return-form').addEventListener('submit', handleReturnSubmit);
 
+    const returnsAllToggle = panel.querySelector('#sg-returns-all-toggle');
+    const returnsAllArrow = panel.querySelector('#sg-returns-all-arrow');
+    const returnsAllContainer = panel.querySelector('#sg-returns-all-container');
+    const toggleAllReturns = () => {
+      if (!returnsAllContainer) return;
+      const willExpand = returnsAllToggle.getAttribute('aria-expanded') !== 'true';
+      returnsAllToggle.setAttribute('aria-expanded', String(willExpand));
+      returnsAllContainer.style.display = willExpand ? 'grid' : 'none';
+      if (returnsAllArrow) {
+        returnsAllArrow.style.transform = willExpand ? 'rotate(180deg)' : 'rotate(0deg)';
+      }
+    };
+    returnsAllToggle?.addEventListener('click', toggleAllReturns);
+    returnsAllToggle?.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      toggleAllReturns();
+    });
+
     // Alternar tipos de tarefas na criação
     const btnTypeWa = panel.querySelector('#sg-task-type-wa');
     const btnTypeReminder = panel.querySelector('#sg-task-type-reminder');
@@ -1950,7 +2113,36 @@
     panel.querySelector('#sg-calendar-prev-btn').addEventListener('click', () => navigateCalendarWeek(-1));
     panel.querySelector('#sg-calendar-next-btn').addEventListener('click', () => navigateCalendarWeek(1));
 
+    const calendarScrollBody = panel.querySelector('.sg-tab-content[data-tab="calendar"] .sg-scroll-body');
+    const calendarScrollControls = panel.querySelector('.sg-calendar-scroll-controls');
+    const calendarScrollUp = panel.querySelector('#sg-calendar-scroll-up');
+    const calendarScrollDown = panel.querySelector('#sg-calendar-scroll-down');
+    const calendarWeekList = panel.querySelector('#sg-calendar-week-list-container');
+
+    const updateCalendarScrollControls = () => {
+      if (!calendarScrollBody || !calendarScrollControls) return;
+      const hasOverflow = calendarScrollBody.scrollHeight > calendarScrollBody.clientHeight + 4;
+      calendarScrollControls.hidden = !hasOverflow;
+      if (!hasOverflow) return;
+      if (calendarScrollUp) calendarScrollUp.disabled = calendarScrollBody.scrollTop <= 2;
+      if (calendarScrollDown) {
+        calendarScrollDown.disabled = calendarScrollBody.scrollTop + calendarScrollBody.clientHeight >= calendarScrollBody.scrollHeight - 2;
+      }
+    };
+
+    calendarScrollUp?.addEventListener('click', () => {
+      calendarScrollBody?.scrollBy({ top: -Math.max(260, calendarScrollBody.clientHeight * 0.7), behavior: 'smooth' });
+    });
+    calendarScrollDown?.addEventListener('click', () => {
+      calendarScrollBody?.scrollBy({ top: Math.max(260, calendarScrollBody.clientHeight * 0.7), behavior: 'smooth' });
+    });
+    calendarScrollBody?.addEventListener('scroll', updateCalendarScrollControls, { passive: true });
+    if (calendarWeekList) {
+      new MutationObserver(updateCalendarScrollControls).observe(calendarWeekList, { childList: true, subtree: true });
+    }
+
     document.body.appendChild(panel);
+    requestAnimationFrame(updateCalendarScrollControls);
   }
 
   async function handleReturnSubmit(event) {
@@ -1983,7 +2175,14 @@
     const dataHora = form.dataHora.value;
     const anotacao = form.observacao.value;
 
-    const actor = await getCurrentActor();
+    let actor;
+    try {
+      actor = await assertCurrentUserOwnsLead();
+    } catch (error) {
+      status.textContent = error.message;
+      status.className = 'sg-return-status sg-return-status--danger';
+      return;
+    }
 
     const payload = {
       lead_id: leadId,
@@ -1991,7 +2190,8 @@
       lead_telefone: leadPhone && leadPhone !== '-' ? leadPhone : null,
       type,
       scheduled_at: new Date(dataHora).toISOString(),
-      internal_note: anotacao || null
+      internal_note: anotacao || null,
+      status: 'pending'
     };
 
     if (actor) {
@@ -2494,19 +2694,6 @@
     }
   }
 
-  const returnsAllToggle = document.getElementById('sg-returns-all-toggle');
-  const returnsAllArrow = document.getElementById('sg-returns-all-arrow');
-  const returnsAllContainer = document.getElementById('sg-returns-all-container');
-  if (returnsAllToggle && returnsAllContainer) {
-    returnsAllToggle.addEventListener('click', () => {
-      const isHidden = returnsAllContainer.style.display === 'none';
-      returnsAllContainer.style.display = isHidden ? 'grid' : 'none';
-      if (returnsAllArrow) {
-        returnsAllArrow.style.transform = isHidden ? 'rotate(180deg)' : 'rotate(0deg)';
-      }
-    });
-  }
-
   /* ------------------------------------------------------------------ */
   /*  Form handling                                                      */
   /* ------------------------------------------------------------------ */
@@ -2551,7 +2738,7 @@
     const telefoneVal = form.telefone.value.trim();
 
     // Validate name: cannot be empty, and cannot be invalid/instruction
-    if (!nomeVal || !validateCapturedName(nomeVal)) {
+    if (!nomeVal || (!validateCapturedName(nomeVal) && !isPhoneNameFallback(nomeVal, telefoneVal))) {
       showStatus('Nome inválido. Preencha o nome do lead manualmente.', 'error');
       form.nome.focus();
       return;
@@ -2761,6 +2948,7 @@
     status.textContent = 'Atualizando responsável...';
 
     try {
+      await assertCurrentUserOwnsLead();
       const response = await chrome.runtime.sendMessage({
         type: 'ASSIGN_LEAD_RESPONSIBLE',
         lead_id: leadId,
@@ -2809,7 +2997,7 @@
     statusEl.style.color = '#aaa';
 
     try {
-      const actor = await getCurrentActor();
+      const actor = await assertCurrentUserOwnsLead();
       data.updated_by_email = actor.email;
       data.updated_by_name = actor.name;
       data.updated_at = new Date().toISOString();
@@ -3054,6 +3242,7 @@
     document.getElementById('sg-crm-lead-note').textContent = 'Não informado';
     detailsEl.dataset.lookupPhone = '';
     detailsEl.dataset.leadId = '';
+    document.getElementById('sg-crm-lead-assigned-row').dataset.assignedEmail = '';
     setCrmEditMode(false);
     detailsEl.style.display = 'none';
 
@@ -3243,7 +3432,7 @@
     statusEl.style.color = '#aaa';
 
     try {
-      const actor = await getCurrentActor();
+      const actor = await assertCurrentUserOwnsLead();
       const stageMessage = {
         type: 'UPDATE_LEAD_STAGE',
         phone: phone,
@@ -3409,7 +3598,7 @@
       throw new Error("Informe data e horário do agendamento.");
     }
 
-    const actor = await getCurrentActor();
+    const actor = await assertCurrentUserOwnsLead(leadAtual);
 
     // Quinto passo: Montar payload
     const appointmentPayload = {
@@ -3786,16 +3975,26 @@
         </div>
         <button class="sg-close" id="seven-gold-close" aria-label="Fechar painel">&times;</button>
       </div>
-      <div class="sg-login-screen" style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: calc(100% - 48px); padding: 32px 24px; text-align: center; background: #0d1730;">
-        <img src="${chrome.runtime.getURL('icons/icon128.png')}" alt="Seven Gold CRM" style="width: 64px; height: 64px; margin-bottom: 16px; opacity: 0.9;" />
-        <h1 style="font-size: 20px; font-weight: 700; color: #d4af37; margin-bottom: 8px;">Seven Gold CRM</h1>
-        <p style="font-size: 13px; color: #8a9fc4; margin-bottom: 24px; line-height: 1.5;">Entre com sua conta autorizada para usar a extensão.</p>
-        <div id="sg-login-error" style="font-size: 12px; color: #f44336; margin-bottom: 12px; line-height: 1.4; display: ${previousError ? 'block' : 'none'};">${previousError || ''}</div>
-        <button type="button" id="sg-login-btn" style="background: linear-gradient(135deg, #b8860b 0%, #d4af37 100%); color: #fff; border: none; padding: 12px 24px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 8px;">
-          <svg width="18" height="18" viewBox="0 0 24 24"><path fill="#fff" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#fff" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#fff" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#fff" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
-          Entrar com Google
-        </button>
-        <p style="font-size: 11px; color: #555; margin-top: 16px;">Use o mesmo login do CRM.</p>
+      <div class="sg-login-screen">
+        <div class="sg-login-bubble-bg" aria-hidden="true">
+          <span class="sg-login-bubble"></span>
+          <span class="sg-login-bubble"></span>
+          <span class="sg-login-bubble"></span>
+          <span class="sg-login-bubble"></span>
+          <span class="sg-login-bubble"></span>
+          <span class="sg-login-bubble"></span>
+        </div>
+        <div class="sg-login-content">
+          <img class="sg-login-logo" src="${chrome.runtime.getURL('icons/seven-gold-financeira.png')}" alt="Seven Gold Financeira" />
+          <h1>Seven Gold CRM</h1>
+          <p class="sg-login-subtitle">Entre com sua conta autorizada para usar a extensão.</p>
+          <div id="sg-login-error" style="display: ${previousError ? 'block' : 'none'};">${previousError || ''}</div>
+          <button type="button" id="sg-login-btn">
+            <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="currentColor" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="currentColor" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="currentColor" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+            Entrar com Google
+          </button>
+          <p class="sg-login-hint">Use o mesmo login do CRM.</p>
+        </div>
       </div>
     `;
 
@@ -4221,8 +4420,7 @@
 
     calendarAppointments = data || [];
 
-    const isSupervisor = canViewLeadAssignee(currentCrmUser?.cargo);
-    if (!isSupervisor && currentCrmUser?.email) {
+    if (currentCrmUser?.email) {
       const myEmail = currentCrmUser.email.trim().toLowerCase();
       const phones = [...new Set(calendarAppointments.map(a => normalizeCrmPhone(a.telefone_cliente || a.phone || a.telefone || '')).filter(Boolean))];
       const leadOwnerMap = {};
@@ -4286,17 +4484,12 @@
       
       // Capitalizar a primeira letra do dia da semana
       const dayLabel = day.label.charAt(0).toUpperCase() + day.label.slice(1);
-      daySection.innerHTML = `<div style="font-weight: 700; color: #d4af37; font-size: 12.5px; border-bottom: 1px solid #1d2f5a; padding-bottom: 4px; margin-bottom: 6px; text-align: center;">${dayLabel}</div>`;
+      daySection.innerHTML = `<div class="sg-calendar-day-title"><span class="sg-calendar-day-dot"></span>${dayLabel}</div>`;
 
       if (day.appointments.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'sg-calendar-empty-day';
-        empty.style.color = '#556c94';
-        empty.style.fontSize = '11px';
-        empty.style.fontStyle = 'italic';
-        empty.style.padding = '2px 0 8px 0';
-        empty.style.textAlign = 'center';
-        empty.textContent = 'Nenhum agendamento';
+        empty.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="17" rx="2"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="3" y1="9" x2="21" y2="9"/></svg><span>Nenhum agendamento</span>`;
         daySection.appendChild(empty);
       } else {
         const appsContainer = document.createElement('div');
@@ -4312,16 +4505,17 @@
           }
 
           card.innerHTML = `
-            <div style="font-weight: bold; color: #fff; margin-bottom: 2px;">
-              ${formatAppointmentHour(appt)} — ${appt.cliente}
+            <div class="sg-appointment-main">
+              <span class="sg-appointment-clock"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg></span>
+              <strong>${formatAppointmentHour(appt)} — ${appt.cliente}</strong>
             </div>
-            <div style="color: #8a9fc4; margin-bottom: 2px;">Vendedor: ${appt.vendedor}</div>
-            ${appt.telefone ? `<div style="color: #8a9fc4; margin-bottom: 6px;">Telefone: ${appt.telefone}</div>` : ''}
+            <div class="sg-appointment-meta">Vendedor: ${appt.vendedor}</div>
+            ${appt.telefone ? `<div class="sg-appointment-meta sg-appointment-phone"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.58 2.81.7A2 2 0 0 1 22 16.92z"/></svg><span>Telefone: ${appt.telefone}</span></div>` : ''}
             ${notesHtml}
-            <div class="sg-appointment-actions" style="margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap;">
-              ${appt.telefone ? `<button type="button" class="sg-app-btn sg-app-btn--whatsapp" data-phone="${appt.telefone}">WhatsApp</button>` : ''}
-              <button type="button" class="sg-app-btn sg-app-btn--view-lead" data-phone="${appt.telefone || ''}">Ver lead</button>
-              <button type="button" class="sg-app-btn sg-app-btn--cancel" data-appointment-id="${appt.id || ''}" data-lead-id="${appt.leadId || ''}" data-phone="${appt.telefone || ''}">Cancelar agendamento</button>
+            <div class="sg-appointment-actions">
+              ${appt.telefone ? `<button type="button" class="sg-app-btn sg-app-btn--whatsapp" data-phone="${appt.telefone}"><span aria-hidden="true">◉</span> WhatsApp</button>` : ''}
+              <button type="button" class="sg-app-btn sg-app-btn--view-lead" data-phone="${appt.telefone || ''}"><span aria-hidden="true">◉</span> Ver lead</button>
+              <button type="button" class="sg-app-btn sg-app-btn--cancel" data-appointment-id="${appt.id || ''}" data-lead-id="${appt.leadId || ''}" data-phone="${appt.telefone || ''}"><span aria-hidden="true">▣</span> Cancelar agendamento</button>
             </div>
           `;
 

@@ -8,28 +8,32 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
       width: 280px;
-      background: #1a1a2e;
-      color: #e0e0e0;
+      background: #080808;
+      color: #f8f5ec;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       font-size: 14px;
     }
     .popup-header {
       padding: 16px;
-      background: linear-gradient(135deg, #b8860b 0%, #d4af37 100%);
-      color: #fff;
+      background: linear-gradient(135deg, #7b5200 0%, #c49316 52%, #f0cf69 100%);
+      color: #080808;
       text-align: center;
+      border-bottom: 1px solid #f6d77a;
     }
     .popup-header h1 { font-size: 18px; }
     .popup-header p { font-size: 12px; opacity: 0.85; margin-top: 4px; }
-    .popup-body { padding: 16px; }
+    .popup-body {
+      padding: 16px;
+      background: radial-gradient(circle at 100% 0, rgba(212, 175, 55, 0.1), transparent 42%);
+    }
     .popup-body p { margin-bottom: 8px; line-height: 1.5; }
-    .popup-body .status { color: #d4af37; font-weight: 600; }
+    .popup-body .status { color: #f6d77a; font-weight: 600; }
     .popup-footer {
       padding: 12px 16px;
-      border-top: 1px solid #333;
+      border-top: 1px solid rgba(212, 175, 55, 0.3);
       font-size: 11px;
       text-align: center;
-      color: #666;
+      color: #8d8778;
     }
   </style>
 </head>
