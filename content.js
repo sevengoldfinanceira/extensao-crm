@@ -498,9 +498,9 @@
 
   function extractNameFromHeader() {
     const selectors = [
-      'header span[title]',
-      '[data-testid="conversation-header"] span[title]',
-      'header span[dir="auto"]',
+      '#main header span[title]',
+      '#main [data-testid="conversation-header"] span[title]',
+      '#main header span[dir="auto"]',
     ];
 
     for (const sel of selectors) {
@@ -508,7 +508,7 @@
         const spans = document.querySelectorAll(sel);
         for (const el of spans) {
           const val = (el.getAttribute('title') || el.textContent || '').trim();
-          if (val && val.length >= 2 && val.length < 80 && !isStatusText(val)) {
+          if (val && val.length >= 2 && val.length < 80 && !isStatusText(val) && !CONTACT_PANEL_LABEL_PATTERN.test(val)) {
             return val;
           }
         }
@@ -516,12 +516,12 @@
     }
 
     try {
-      const header = document.querySelector('header');
+      const header = document.querySelector('#main header');
       if (header) {
         const spans = header.querySelectorAll('span[dir="auto"]');
         for (const el of spans) {
           const val = (el.textContent || '').trim();
-          if (val && val.length >= 2 && val.length < 80 && !isStatusText(val)) {
+          if (val && val.length >= 2 && val.length < 80 && !isStatusText(val) && !CONTACT_PANEL_LABEL_PATTERN.test(val)) {
             return val;
           }
         }
@@ -672,6 +672,29 @@
   }
 
   function findContactPanelContainer() {
+    // Primeiro parte do título do painel e sobe na árvore somente até o
+    // primeiro ancestral que também contenha o telefone. Assim nunca retorna
+    // apenas o cabeçalho "Detalhes do contacto".
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      const label = normalizeText(node.textContent || '');
+      if (!CONTACT_PANEL_LABEL_PATTERN.test(label)) continue;
+
+      let el = node.parentElement;
+      while (el && el !== document.body) {
+        if (!isInsideExtension(el) && isElementVisible(el)) {
+          const text = normalizeText(el.innerText || el.textContent || '');
+          const hasLabel = CONTACT_PANEL_LABEL_PATTERN.test(text);
+          const hasPhone = findCandidatesFromContainer(el).some(candidate => !candidate.rejected);
+          if (hasLabel && hasPhone) return el;
+        }
+        el = el.parentElement;
+      }
+    }
+
+    // Fallback para versões do WhatsApp que fornecem atributos semânticos,
+    // mas traduzem o título para um idioma ainda não conhecido.
     const semanticSelectors = [
       '[data-testid="contact-info-drawer"]',
       '[data-testid*="contact-info"]',
@@ -686,35 +709,12 @@
         if (!isElementVisible(el)) continue;
         const text = normalizeText(el.innerText || el.textContent || '');
         const rect = el.getBoundingClientRect();
-        const hasPanelLabel = CONTACT_PANEL_LABEL_PATTERN.test(text);
         const hasPhone = findCandidatesFromContainer(el).some(candidate => !candidate.rejected);
         const isPanelSized = rect.width >= 160 && rect.height >= Math.min(240, window.innerHeight * 0.35);
         const isLikelyRightDrawer = isPanelSized && rect.left >= window.innerWidth * 0.4;
-        if ((hasPanelLabel && isPanelSized) || (hasPhone && isLikelyRightDrawer)) {
+        if (hasPhone && isLikelyRightDrawer) {
           return el;
         }
-      }
-    }
-
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-    let node;
-    while ((node = walker.nextNode())) {
-      const t = normalizeText(node.textContent);
-      if (CONTACT_PANEL_LABEL_PATTERN.test(t)) {
-        let el = node.parentElement;
-        let best = null;
-        while (el && el !== document.body) {
-          const rect = el.getBoundingClientRect();
-          if (!isInsideExtension(el) && rect.width >= 160 && rect.height >= Math.min(240, window.innerHeight * 0.35)) {
-            // Mantém o ancestral visível mais próximo. Não há limite máximo de
-            // largura: zoom e escala do sistema alteram esse valor bastante.
-            best = el;
-            if (el.matches('aside, [role="dialog"], section, [data-testid*="drawer"]')) return el;
-            break;
-          }
-          el = el.parentElement;
-        }
-        if (best) return best;
       }
     }
     return null;
@@ -1981,7 +1981,7 @@
 
       <div style="text-align: center; font-size: 10px; color: #555; padding: 12px 16px; border-top: 1px solid #1d2f5a; background-color: #0d1730; flex-shrink: 0; display: flex; align-items: center; justify-content: center; gap: 4px;">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: #d4af37;"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-        <span>Seven Gold CRM • Extensão v1.0.2</span>
+        <span>Seven Gold CRM • Extensão v1.0.3</span>
       </div>
     `;
 
