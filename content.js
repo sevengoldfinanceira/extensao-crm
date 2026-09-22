@@ -869,33 +869,28 @@
       if (validateCapturedName(profileName)) return profileName;
     }
 
-    // Filtrar linhas de instruções e metadados comuns logo no início para encontrar a primeira relevante
-    const relevantLines = [];
-    for (const line of lines) {
-      const lower = line.toLowerCase();
-      const hasForbiddenWord = FORBIDDEN_NAME_WORDS.some(word => lower.includes(word));
+    const normalizedCapturedPhone = normalizePhone(capturedPhone || '');
+    const phoneLineIndex = lines.findIndex((line) => {
       const linePhone = normalizeCapturedPhone(line);
-      const isCapturedPhone = linePhone && linePhone === normalizePhone(capturedPhone || '');
-      if (hasForbiddenWord || CONTACT_PANEL_LABEL_PATTERN.test(line) || isCapturedPhone) continue;
-      relevantLines.push(line);
+      return linePhone && linePhone === normalizedCapturedPhone;
+    });
+
+    // Para contatos salvos, o nome fica no bloco de identidade imediatamente
+    // antes do telefone. Nunca procura depois do telefone, pois ali começam
+    // ações como "Voz", "Videochamada" e outros textos da interface.
+    if (phoneLineIndex > 0) {
+      for (let i = phoneLineIndex - 1; i >= 0; i--) {
+        const candidate = lines[i];
+        const lower = candidate.toLowerCase();
+        const hasForbiddenWord = FORBIDDEN_NAME_WORDS.some(word => lower.includes(word));
+        if (hasForbiddenWord || CONTACT_PANEL_LABEL_PATTERN.test(candidate)) continue;
+        if (normalizeCapturedPhone(candidate)) continue;
+        return validateCapturedName(candidate) ? candidate : '';
+      }
     }
 
-    if (relevantLines.length === 0) return '';
-
-    const firstLine = relevantLines[0];
-
-    // Checar se primeira linha é telefone
-    const isFirstLinePhone = Boolean(normalizeCapturedPhone(firstLine));
-
-    if (isFirstLinePhone) {
-      // Caso 1: Primeira linha relevante começa com +.
-      // O fallback controlado para o telefone é aplicado depois, somente se
-      // painel e cabeçalho não fornecerem um nome válido.
-      return '';
-    } else {
-      // Caso 2: Primeira linha relevante não começa com +
-      return validateCapturedName(firstLine) ? firstLine : '';
-    }
+    // Sem nome salvo/público, o chamador usa o próprio telefone como nome.
+    return '';
   }
 
   const FORBIDDEN_WORDS = [
@@ -1088,17 +1083,11 @@
 
       // Em contatos não salvos o próprio cabeçalho frequentemente contém o
       // telefone. Esse caminho não depende do painel lateral nem do zoom.
-      let phone = normalizeCapturedPhone(headerName);
+      const headerPhone = normalizeCapturedPhone(headerName);
+      let phone = '';
       let finalName = '';
 
-      if (phone) {
-        form.telefone.value = phone;
-        form.nome.value = phone;
-        finalName = phone;
-        showStatus('Lead capturado. Confira os dados antes de salvar.', 'success');
-      }
-
-      for (let i = 0; i < attemptDelays.length && !phone; i++) {
+      for (let i = 0; i < attemptDelays.length; i++) {
         // Aguardar o delay correspondente da etapa
         await sleep(attemptDelays[i]);
 
@@ -1131,6 +1120,16 @@
             break;
           }
         }
+      }
+
+      // Se o painel não foi encontrado, ainda é possível capturar contatos
+      // não salvos cujo telefone aparece no cabeçalho da conversa.
+      if (!phone && headerPhone) {
+        phone = headerPhone;
+        finalName = phone;
+        form.telefone.value = phone;
+        form.nome.value = finalName;
+        showStatus('Lead capturado. Confira os dados antes de salvar.', 'success');
       }
 
       if (!phone) {
@@ -1981,7 +1980,7 @@
 
       <div style="text-align: center; font-size: 10px; color: #555; padding: 12px 16px; border-top: 1px solid #1d2f5a; background-color: #0d1730; flex-shrink: 0; display: flex; align-items: center; justify-content: center; gap: 4px;">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: #d4af37;"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-        <span>Seven Gold CRM • Extensão v1.0.3</span>
+        <span>Seven Gold CRM • Extensão v1.0.4</span>
       </div>
     `;
 
